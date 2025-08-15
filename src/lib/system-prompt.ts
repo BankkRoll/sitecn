@@ -212,10 +212,9 @@ export function buildThemePrompt({
   } | null;
   userText?: string;
 }): { systemPrompt: string; userPrompt: string } {
-  // Use the snapshot exactly as passed (background.ts already optimized it)
   const basePromptData = {
     domain,
-    snapshot: snapshot, // Use snapshot directly (already optimized in background.ts)
+    snapshot: snapshot,
     siteStylesheet: siteStylesheet ?? "",
     user: { text: userText ?? "" },
   };

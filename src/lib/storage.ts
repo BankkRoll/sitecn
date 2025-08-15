@@ -46,7 +46,6 @@ export const zModelAvailability = z.object({
   at: z.number(),
 });
 export type ModelAvailability = z.infer<typeof zModelAvailability>;
-// Enhanced error classes for better debugging
 class StorageError extends Error {
   constructor(
     message: string,
@@ -72,15 +71,11 @@ class StorageUnavailableError extends StorageError {
   }
 }
 
-// Sanitize storage key to ensure Chrome storage compatibility
 function sanitizeStorageKey(key: string): string {
   if (!key || key.length === 0) return key;
 
-  // Replace invalid characters with underscores
-  // Chrome storage doesn't allow: : " / \ | ? * < > and control characters
   const sanitized = key.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_");
 
-  // Ensure key length is within Chrome's limits
   const maxLength = 512;
   if (sanitized.length > maxLength) {
     return sanitized.substring(0, maxLength);
@@ -89,9 +84,7 @@ function sanitizeStorageKey(key: string): string {
   return sanitized;
 }
 
-// Validate storage key to prevent issues with invalid characters
 function validateStorageKey(key: string): boolean {
-  // Chrome storage keys have specific limitations
   const maxLength = 512;
   const invalidChars = /[<>:"/\\|?*\x00-\x1f]/;
 
@@ -102,12 +95,10 @@ function validateStorageKey(key: string): boolean {
   return true;
 }
 
-// Check if browser storage is available and functional
 async function checkStorageAvailability(): Promise<boolean> {
   try {
     if (!browser?.storage?.local) return false;
 
-    // Test write/read/delete cycle with a safe test key
     const testKey = "__sitecn_storage_test__";
     const testValue = { timestamp: Date.now() };
 
@@ -121,7 +112,6 @@ async function checkStorageAvailability(): Promise<boolean> {
   }
 }
 
-// Storage availability cache
 let storageAvailable: boolean | null = null;
 let lastStorageCheck = 0;
 const STORAGE_CHECK_TTL = 60000; // 1 minute
@@ -129,7 +119,6 @@ const STORAGE_CHECK_TTL = 60000; // 1 minute
 async function ensureStorageAvailable(): Promise<void> {
   const now = Date.now();
 
-  // Use cached result if recent
   if (storageAvailable !== null && now - lastStorageCheck < STORAGE_CHECK_TTL) {
     if (!storageAvailable) {
       throw new StorageUnavailableError();
@@ -137,7 +126,6 @@ async function ensureStorageAvailable(): Promise<void> {
     return;
   }
 
-  // Check storage availability
   storageAvailable = await checkStorageAvailability();
   lastStorageCheck = now;
 
@@ -151,7 +139,6 @@ async function storageGet<T>(
   schema: z.ZodType<T>,
 ): Promise<T | null> {
   try {
-    // Sanitize and validate key format
     const sanitizedKey = sanitizeStorageKey(key);
     if (!validateStorageKey(sanitizedKey)) {
       console.warn(
@@ -160,7 +147,6 @@ async function storageGet<T>(
       return null;
     }
 
-    // Ensure storage is available
     await ensureStorageAvailable();
 
     const obj = (await browser.storage.local.get(sanitizedKey)) as any;
@@ -180,11 +166,9 @@ async function storageGet<T>(
   }
 }
 
-// Concurrent operation tracking to prevent conflicts
 const pendingOperations = new Map<string, Promise<any>>();
 
 async function storageSet<T>(key: string, value: T): Promise<void> {
-  // Sanitize and validate key format
   const sanitizedKey = sanitizeStorageKey(key);
   if (!validateStorageKey(sanitizedKey)) {
     throw new StorageError(
@@ -194,13 +178,10 @@ async function storageSet<T>(key: string, value: T): Promise<void> {
     );
   }
 
-  // Ensure storage is available
   await ensureStorageAvailable();
 
-  // Check for concurrent operations on the same key
   const operationKey = `set_${sanitizedKey}`;
   if (pendingOperations.has(operationKey)) {
-    // Wait for existing operation to complete
     try {
       await pendingOperations.get(operationKey);
     } catch {
@@ -208,15 +189,12 @@ async function storageSet<T>(key: string, value: T): Promise<void> {
     }
   }
 
-  // Create operation promise
   const operation = (async () => {
     try {
-      // Estimate data size for quota checking
       const serialized = JSON.stringify({ [sanitizedKey]: value });
       const estimatedSize = new Blob([serialized]).size;
 
-      // Check if data is extremely large (>1MB)
-      const MAX_ITEM_SIZE = 1024 * 1024; // 1MB
+      const MAX_ITEM_SIZE = 1024 * 1024;
       if (estimatedSize > MAX_ITEM_SIZE) {
         console.warn(
           `Large storage write attempted for key ${key} (sanitized: ${sanitizedKey}): ${estimatedSize} bytes`,
@@ -225,7 +203,6 @@ async function storageSet<T>(key: string, value: T): Promise<void> {
 
       await browser.storage.local.set({ [sanitizedKey]: value });
     } catch (error: any) {
-      // Handle specific Chrome storage errors
       if (error?.message?.includes("QUOTA_EXCEEDED")) {
         throw new StorageQuotaError(sanitizedKey);
       }
@@ -250,20 +227,17 @@ async function storageSet<T>(key: string, value: T): Promise<void> {
     }
   })();
 
-  // Track the operation
   pendingOperations.set(operationKey, operation);
 
   try {
     await operation;
   } finally {
-    // Clean up tracking
     pendingOperations.delete(operationKey);
   }
 }
 
 async function storageRemove(key: string): Promise<void> {
   try {
-    // Sanitize and validate key format
     const sanitizedKey = sanitizeStorageKey(key);
     if (!validateStorageKey(sanitizedKey)) {
       throw new StorageError(
@@ -273,13 +247,10 @@ async function storageRemove(key: string): Promise<void> {
       );
     }
 
-    // Ensure storage is available
     await ensureStorageAvailable();
 
-    // Check for concurrent operations on the same key
     const operationKey = `remove_${sanitizedKey}`;
     if (pendingOperations.has(operationKey)) {
-      // Wait for existing operation to complete
       try {
         await pendingOperations.get(operationKey);
       } catch {
@@ -287,16 +258,13 @@ async function storageRemove(key: string): Promise<void> {
       }
     }
 
-    // Create operation promise
     const operation = browser.storage.local.remove(sanitizedKey);
 
-    // Track the operation
     pendingOperations.set(operationKey, operation);
 
     try {
       await operation;
     } finally {
-      // Clean up tracking
       pendingOperations.delete(operationKey);
     }
   } catch (error) {
@@ -317,7 +285,6 @@ async function storageRemove(key: string): Promise<void> {
   }
 }
 
-// Export error classes for use in other modules
 export { StorageError, StorageQuotaError, StorageUnavailableError };
 
 export async function getSiteEntry(

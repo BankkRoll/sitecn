@@ -142,7 +142,6 @@ function SidepanelRoot() {
   );
 }
 
-// Sidepanel presence lifecycle (subscribe/unsubscribe)
 (function initSidepanelPresence() {
   try {
     const id = `sp-${Date.now()}`;

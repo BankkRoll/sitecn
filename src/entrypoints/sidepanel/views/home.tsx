@@ -67,7 +67,6 @@ export function Home() {
       setInputLocked(!baseThemeName);
       setPrompt("");
     } else {
-      // base
       setInputLocked(false);
       setPrompt("");
       setBaseThemeName("");
@@ -85,7 +84,6 @@ export function Home() {
         vars[k] = String(v).trim();
         return "";
       });
-      // Return ALL parsed CSS variables, not just a subset
       return Object.keys(vars).length > 0 ? vars : undefined;
     } catch {
       return undefined;
@@ -113,7 +111,6 @@ export function Home() {
   }
 
   useEffect(() => {
-    // Keep live domain for message listener comparisons
     domainRef.current = domain;
   }, [domain]);
 
@@ -207,7 +204,6 @@ export function Home() {
         const warning = msg?.payload?.warning;
 
         if (error) {
-          // Handle error case
           toast.error(error);
           setMessages((cur) => {
             const errorMsg: ThreadMessage = {
@@ -223,7 +219,6 @@ export function Home() {
         } else if (typeof nextCss === "string") {
           const derived = parseThemeFromCss(nextCss);
 
-          // Show warning if present
           if (warning) {
             toast.warning(warning);
           }
@@ -286,7 +281,6 @@ export function Home() {
         const warning = msg?.payload?.warning;
 
         if (error) {
-          // Handle error case with specific error type detection
           let userFriendlyError = error;
           let troubleshootingHint = "";
 
@@ -323,7 +317,6 @@ export function Home() {
         } else {
           const derived = parseThemeFromCss(nextCss);
 
-          // Show warning if present
           if (warning) {
             toast.warning(warning);
           }
@@ -370,7 +363,6 @@ export function Home() {
           });
         }
 
-        // Always end the thinking state
         setLoading((s) => ({ ...s, pending: false }));
         setPendingAssistantId(null);
         setInputLocked(false);
@@ -432,12 +424,10 @@ export function Home() {
       setPendingAssistantId(null);
       setInputLocked(false);
 
-      // Notify user of timeout
       toast.error(
         "Theme generation timed out. This might indicate an issue with the AI model or site analysis.",
       );
 
-      // Add timeout message to chat
       setMessages((cur) => {
         const timeoutMsg: ThreadMessage = {
           id: `timeout_${Date.now()}`,
@@ -499,18 +489,15 @@ export function Home() {
       setInputLocked(false);
       setPendingAssistantId(null);
 
-      // Clear any pending spinner
       if (spinnerTimeoutRef.current) {
         clearTimeout(spinnerTimeoutRef.current);
         spinnerTimeoutRef.current = null;
       }
 
-      // Show user-friendly error message
       const errorMessage =
         e?.message || "Failed to send message. Please try again.";
       toast.error(errorMessage);
 
-      // Add error message to chat
       setMessages((cur) => {
         const errorMsg: ThreadMessage = {
           id: `error_${Date.now()}`,

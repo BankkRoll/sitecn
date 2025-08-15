@@ -1,7 +1,6 @@
 import { MessageType, type StyleSnapshot } from "@/entrypoints/types";
 import { browser } from "wxt/browser";
 
-// Enhanced error classes for content script failures
 class ContentScriptError extends Error {
   constructor(
     message: string,
@@ -37,7 +36,6 @@ class InvalidCSSError extends ContentScriptError {
   }
 }
 
-// Document readiness checks
 function isDocumentReady(): boolean {
   return (
     document.readyState === "complete" ||
@@ -67,7 +65,6 @@ async function waitForDocumentReady(timeoutMs: number = 5000): Promise<void> {
   });
 }
 
-// CSP detection and handling
 function detectCSPViolation(error: any): boolean {
   const message = error?.message?.toLowerCase() || "";
   return (
@@ -78,7 +75,6 @@ function detectCSPViolation(error: any): boolean {
   );
 }
 
-// Forward declarations for functions used in shadow DOM extraction
 declare function parseCssText(
   cssText: string,
   cssVariables: Record<string, string>,
@@ -99,10 +95,8 @@ export default defineContentScript({
   main() {
     console.log("Content script loaded for:", window.location.href);
 
-    // Ensure content script is properly connected
     let isConnected = true;
 
-    // Test connection with background script
     const testConnection = async () => {
       try {
         await browser.runtime.sendMessage({
@@ -117,7 +111,6 @@ export default defineContentScript({
       }
     };
 
-    // Enhanced message listener with connection checking
     browser.runtime.onMessage.addListener(
       async (message: any, sender, sendResponse) => {
         console.log("Content script received message:", message?.messageType);
@@ -130,7 +123,6 @@ export default defineContentScript({
           }
 
           try {
-            // Test connection before proceeding
             if (!isConnected) {
               const connected = await testConnection();
               if (!connected) {
@@ -152,7 +144,6 @@ export default defineContentScript({
           } catch (error) {
             console.error("Snapshot extraction failed:", error);
 
-            // Enhanced error reporting
             const errorDetails = {
               domain,
               snapshot: null,
@@ -176,16 +167,13 @@ export default defineContentScript({
                 "Failed to send error message to background:",
                 sendError,
               );
-              // Content script is likely disconnected
               isConnected = false;
             }
           }
         }
 
-        // Handle ping messages for connection testing
         if (message?.messageType === "ping") {
           try {
-            // Content script ping response - just acknowledge the ping
             console.log("Ping received from background script");
           } catch (error) {
             console.warn("Failed to handle ping:", error);
@@ -193,7 +181,7 @@ export default defineContentScript({
           return true;
         }
 
-        return true; // Keep the message channel open for async responses
+        return true;
       },
     );
 
@@ -201,10 +189,8 @@ export default defineContentScript({
       domain: string,
     ): Promise<StyleSnapshot> {
       try {
-        // Wait for document to be ready
         await waitForDocumentReady(5000);
 
-        // Check if document has basic structure
         if (!document.documentElement || !document.head) {
           throw new DOMNotReadyError();
         }
@@ -213,7 +199,6 @@ export default defineContentScript({
         const computedData = extractComputedStyles();
         const shadowData = extractFromShadowRoots();
 
-        // Merge all data sources
         const allColors = [
           ...stylesheetData.colors,
           ...computedData.paletteSamples,
@@ -256,7 +241,6 @@ export default defineContentScript({
           throw error;
         }
 
-        // Check for specific error types
         if (detectCSPViolation(error)) {
           throw new CSPViolationError("style_extraction", error);
         }
@@ -269,7 +253,6 @@ export default defineContentScript({
       }
     }
 
-    // ShadowDOM content extraction - defined after the helper functions
     function extractFromShadowRoots(): {
       cssVariables: Record<string, string>;
       colors: string[];
@@ -282,7 +265,6 @@ export default defineContentScript({
       };
 
       try {
-        // Find all elements with shadow roots
         const walker = document.createTreeWalker(
           document.body || document.documentElement,
           NodeFilter.SHOW_ELEMENT,
@@ -301,7 +283,6 @@ export default defineContentScript({
           const shadowRoot = element.shadowRoot;
 
           if (shadowRoot) {
-            // Extract styles from shadow DOM
             const styles = shadowRoot.querySelectorAll("style");
             styles.forEach((styleElement) => {
               try {
@@ -319,7 +300,6 @@ export default defineContentScript({
               }
             });
 
-            // Check for adoptedStyleSheets (if supported)
             if (shadowRoot.adoptedStyleSheets) {
               shadowRoot.adoptedStyleSheets.forEach((sheet) => {
                 try {
@@ -531,13 +511,11 @@ export default defineContentScript({
       if (!cssText || typeof cssText !== "string") return;
 
       try {
-        // Validate CSS text doesn't contain potential XSS or injection
         if (cssText.includes("<script") || cssText.includes("javascript:")) {
           throw new InvalidCSSError(cssText, "Potential XSS content detected");
         }
 
-        // Limit CSS text size to prevent memory issues
-        const MAX_CSS_SIZE = 10 * 1024 * 1024; // 10MB
+        const MAX_CSS_SIZE = 10 * 1024 * 1024;
         if (cssText.length > MAX_CSS_SIZE) {
           console.warn(`Large CSS text truncated: ${cssText.length} bytes`);
           cssText = cssText.substring(0, MAX_CSS_SIZE);
@@ -708,8 +686,8 @@ export default defineContentScript({
 
     function getUsedSelectors(): Set<string> {
       const usedSelectors = new Set<string>();
-      const processedSelectors = new Set<string>(); // Prevent infinite loops
-      const MAX_SELECTOR_CHECKS = 10000; // Safety limit
+      const processedSelectors = new Set<string>();
+      const MAX_SELECTOR_CHECKS = 10000;
       let selectorCount = 0;
 
       for (let i = 0; i < document.styleSheets.length; i++) {
@@ -722,7 +700,6 @@ export default defineContentScript({
             if (rule instanceof CSSStyleRule) {
               const selector = rule.selectorText;
 
-              // Prevent infinite loops and performance issues
               if (
                 processedSelectors.has(selector) ||
                 selectorCount >= MAX_SELECTOR_CHECKS
@@ -734,7 +711,6 @@ export default defineContentScript({
               selectorCount++;
 
               try {
-                // Validate selector before using querySelector
                 if (
                   isValidSelector(selector) &&
                   document.querySelector(selector)
@@ -759,7 +735,6 @@ export default defineContentScript({
     function isValidSelector(selector: string): boolean {
       if (!selector || typeof selector !== "string") return false;
 
-      // Basic validation for problematic selectors
       const problematicPatterns = [
         /^\s*$/, // Empty or whitespace only
         /[@{}]/, // Contains @ rules or braces
@@ -771,7 +746,6 @@ export default defineContentScript({
         if (pattern.test(selector)) return false;
       }
 
-      // Length check to prevent extremely long selectors
       if (selector.length > 1000) return false;
 
       return true;

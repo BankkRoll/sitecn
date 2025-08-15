@@ -19,7 +19,6 @@ import { buildThemePrompt } from "@/lib/system-prompt";
 import { getRegistryThemeByName } from "@/lib/theme-registry";
 import { browser } from "wxt/browser";
 
-// Enhanced error handling types
 class SnapshotExtractionError extends Error {
   constructor(
     message: string,
@@ -84,31 +83,21 @@ let modelStatusIntervalId: number | null = null;
 /**
  * Race condition prevention and resource management
  */
-// Track ongoing snapshot extractions to prevent duplicates
 const ongoingExtractions = new Map<
   string,
   Promise<StyleSnapshot | undefined>
 >();
 
-// Track active tabs to handle tab closure during operations
 const activeTabs = new Set<number>();
-
-// Track theme generation operations by domain
 const ongoingGenerations = new Map<string, Promise<void>>();
-
-// Cleanup for orphaned operations
 const operationTimeouts = new Map<string, NodeJS.Timeout>();
-
-// Model session cleanup tracking
 const activeModelSessions = new Map<string, any>();
 
-// Tab lifecycle management
 browser.tabs.onRemoved.addListener((tabId) => {
   activeTabs.delete(tabId);
   lastKnownDomainByTab.delete(tabId);
   lastBroadcastDomainByTab.delete(tabId);
 
-  // Cleanup any ongoing operations for this tab
   cleanupTabOperations(tabId);
 });
 
@@ -118,7 +107,6 @@ browser.tabs.onCreated.addListener((tab) => {
   }
 });
 
-// Initialize active tabs
 (async () => {
   try {
     const tabs = await browser.tabs.query({});
@@ -129,14 +117,11 @@ browser.tabs.onCreated.addListener((tab) => {
 })();
 
 function cleanupTabOperations(tabId: number) {
-  // Find and cleanup operations related to this tab
   const domain = lastKnownDomainByTab.get(tabId);
   if (domain) {
-    // Cancel ongoing extractions
     ongoingExtractions.delete(domain);
     ongoingGenerations.delete(domain);
 
-    // Clear timeouts
     const extractionKey = `extraction_${domain}`;
     const generationKey = `generation_${domain}`;
 
@@ -150,7 +135,6 @@ function cleanupTabOperations(tabId: number) {
       operationTimeouts.delete(generationKey);
     }
 
-    // Cleanup model sessions
     const sessionKey = domain;
     if (activeModelSessions.has(sessionKey)) {
       try {
@@ -162,7 +146,6 @@ function cleanupTabOperations(tabId: number) {
   }
 }
 
-// Enhanced CORS fetch with timeout and abort controller
 async function fetchWithTimeout(
   url: string,
   timeoutMs: number = 10000,
@@ -467,7 +450,6 @@ export default defineBackground(() => {
           });
         }
 
-        // For analyze mode, we only need fresh site data, not stored themes
         const siteStylesheet =
           mode === "analyze" ? "" : (await getSiteEntry(domain))?.css || "";
         console.log("📄 6. SITE STYLESHEET DECISION:", {
@@ -505,7 +487,6 @@ export default defineBackground(() => {
             snapshotType: typeof snapshot,
           });
 
-          // Optimize snapshot: Remove Tailwind noise and limit data size
           const optimizedSnapshot = snapshot
             ? {
                 domain: snapshot.domain,
@@ -638,7 +619,6 @@ export default defineBackground(() => {
 
           const errorMessage = e instanceof Error ? e.message : String(e);
 
-          // Try fallback for base/preset modes
           if (mode !== "analyze" && snapshot) {
             console.log("🔄 21. ATTEMPTING FALLBACK CSS...");
             const fallbackCss = fallbackCssFromSnapshot(snapshot);
@@ -892,7 +872,6 @@ export default defineBackground(() => {
             const fetchedStyles = await Promise.allSettled(
               urls.map(async (url) => {
                 try {
-                  // Use enhanced fetch with timeout and abort controller
                   const response = await fetchWithTimeout(url, 10000);
 
                   if (!response.ok) {
@@ -903,8 +882,7 @@ export default defineBackground(() => {
 
                   const css = await response.text();
 
-                  // Validate CSS content size
-                  const MAX_CSS_SIZE = 5 * 1024 * 1024; // 5MB limit
+                  const MAX_CSS_SIZE = 5 * 1024 * 1024;
                   if (css.length > MAX_CSS_SIZE) {
                     console.warn(
                       `Large CSS fetched from ${url}: ${css.length} bytes, truncating`,
@@ -924,7 +902,6 @@ export default defineBackground(() => {
                     error,
                   );
 
-                  // Categorize error types for better handling
                   let errorType = "unknown";
                   if (error.name === "AbortError") {
                     errorType = "timeout";
@@ -1159,7 +1136,6 @@ async function extractSnapshotWithRetry(
   domain: string,
   maxRetries: number = 3,
 ): Promise<StyleSnapshot | undefined> {
-  // Check if extraction is already in progress for this domain
   if (ongoingExtractions.has(domain)) {
     console.log(
       `🔄 Snapshot extraction already in progress for ${domain}, waiting for existing operation...`,
@@ -1170,16 +1146,14 @@ async function extractSnapshotWithRetry(
   console.log("📷 === SNAPSHOT EXTRACTION FLOW START ===");
   console.log(`🚀 SNAPSHOT: Starting extraction for ${domain}`);
 
-  // Create extraction promise
   const extractionPromise = (async (): Promise<StyleSnapshot | undefined> => {
     let lastError: Error | undefined;
     const extractionKey = `extraction_${domain}`;
 
-    // Set operation timeout
     const timeoutId = setTimeout(() => {
       console.warn(`Snapshot extraction timeout for ${domain}`);
       ongoingExtractions.delete(domain);
-    }, 60000); // 1 minute max
+    }, 60000);
 
     operationTimeouts.set(extractionKey, timeoutId);
 
@@ -1203,7 +1177,6 @@ async function extractSnapshotWithRetry(
             );
           }
 
-          // Check if tab is still active and valid
           if (!activeTabs.has(active.id)) {
             throw new SnapshotExtractionError(
               `Tab ${active.id} is no longer active for ${domain}`,
@@ -1212,7 +1185,6 @@ async function extractSnapshotWithRetry(
             );
           }
 
-          // Verify tab URL still matches domain
           const currentDomain = extractDomain(active.url || "");
           if (currentDomain !== domain) {
             throw new SnapshotExtractionError(
@@ -1222,21 +1194,18 @@ async function extractSnapshotWithRetry(
             );
           }
 
-          // Test if content script is available before sending extraction request
           try {
             await browser.tabs.sendMessage(active.id, {
               messageType: "ping",
               payload: { domain },
             });
           } catch (pingError) {
-            // Content script not available, try to inject it
             try {
               await browser.scripting.executeScript({
                 target: { tabId: active.id },
                 files: ["content-scripts/content.js"],
               });
 
-              // Wait a bit for injection to complete
               await new Promise((resolve) => setTimeout(resolve, 500));
             } catch (injectionError) {
               throw new SnapshotExtractionError(
@@ -1247,23 +1216,19 @@ async function extractSnapshotWithRetry(
             }
           }
 
-          // Wait for response with appropriate timeout
-          const timeout = Math.min(5000 + attempt * 2000, 15000); // Increasing timeout per attempt
+          const timeout = Math.min(5000 + attempt * 2000, 15000);
           console.log(
             `⏰ SNAPSHOT: Waiting for response (${timeout}ms timeout)`,
           );
 
-          // Start waiting BEFORE sending the message
           const snapshotPromise = waitForSnapshot(domain, timeout);
 
-          // Send extraction request
           console.log(`📤 SNAPSHOT: Sending request to tab ${active.id}`);
           await browser.tabs.sendMessage(active.id, {
             messageType: MessageType.extractSiteSnapshot,
             payload: { domain },
           });
 
-          // Now await the response
           const snapshot = await snapshotPromise;
 
           if (snapshot) {
@@ -1293,7 +1258,6 @@ async function extractSnapshotWithRetry(
             break;
           }
 
-          // Wait before retry (exponential backoff)
           await new Promise((resolve) =>
             setTimeout(resolve, Math.pow(2, attempt) * 1000),
           );
@@ -1307,7 +1271,6 @@ async function extractSnapshotWithRetry(
       finalError.cause = lastError;
       throw finalError;
     } finally {
-      // Cleanup
       console.log(`🧹 SNAPSHOT: Cleaning up extraction for ${domain}`);
       clearTimeout(timeoutId);
       operationTimeouts.delete(extractionKey);
@@ -1316,7 +1279,6 @@ async function extractSnapshotWithRetry(
     }
   })();
 
-  // Track the ongoing extraction
   ongoingExtractions.set(domain, extractionPromise);
 
   return extractionPromise;
