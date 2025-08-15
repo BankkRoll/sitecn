@@ -1,21 +1,21 @@
-import { Composer } from "@/components/sidepanel/home/chat/composer";
-import { InlineModeBadges } from "@/components/sidepanel/home/chat/inline-mode-badges";
-import type { ThreadMessage as ChatThreadMessage } from "@/components/sidepanel/home/chat/message";
-import { ChatMessages } from "@/components/sidepanel/home/chat/messages";
-import { type ChatMode } from "@/components/sidepanel/home/chat/mode-bar";
+import { Composer } from "@/components/sidepanel/home/composer";
+import { ModelFooter } from "@/components/sidepanel/home/domain-footer";
 import { EmptyChat } from "@/components/sidepanel/home/empty-chat";
-import { ModelFooter } from "@/components/sidepanel/home/model-footer";
+import type { ThreadMessage as ChatThreadMessage } from "@/components/sidepanel/home/message";
+import { ChatMessages } from "@/components/sidepanel/home/messages";
+import { InlineModeBadges } from "@/components/sidepanel/home/model-select";
 import {
   DEFAULT_STARTER_SUGGESTIONS,
   sampleSuggestions,
 } from "@/components/sidepanel/home/starter-suggestions";
-import { MessageType } from "@/entrypoints/types";
+import { MessageType, type ChatMode } from "@/entrypoints/types";
 import {
   getCachedModelAvailability as getModelAvailabilityRec,
   getThread as loadThread,
   saveThread,
   setCachedModelAvailability as setModelAvailabilityRec,
   setSiteEntry,
+  withStorageRetry,
 } from "@/lib/storage";
 import { listRegistryThemes } from "@/lib/theme-registry";
 import { useEffect, useRef, useState } from "react";
@@ -91,13 +91,21 @@ export function Home() {
   }
 
   async function getCachedModelAvailability(): Promise<string | undefined> {
-    try {
-      const rec = await getModelAvailabilityRec();
-      if (rec && typeof rec.value === "string" && typeof rec.at === "number") {
-        if (Date.now() - rec.at < MODEL_CACHE_TTL_MS) return rec.value;
-      }
-    } catch {}
-    return undefined;
+    return await withStorageRetry(
+      async () => {
+        const rec = await getModelAvailabilityRec();
+        if (
+          rec &&
+          typeof rec.value === "string" &&
+          typeof rec.at === "number"
+        ) {
+          if (Date.now() - rec.at < MODEL_CACHE_TTL_MS) return rec.value;
+        }
+        return undefined;
+      },
+      undefined,
+      "getCachedModelAvailability",
+    );
   }
   async function setCachedModelAvailability(value: string): Promise<void> {
     try {
@@ -106,8 +114,25 @@ export function Home() {
   }
 
   async function loadThreadIntoState(forDomain: string): Promise<void> {
-    const arr = await loadThread(forDomain);
+    const arr = await withStorageRetry(
+      () => loadThread(forDomain),
+      [],
+      "loadThread",
+    );
     setMessages(arr as ThreadMessage[]);
+  }
+
+  function safelyStoreThread(domain: string, messages: ThreadMessage[]): void {
+    withStorageRetry(
+      () => saveThread(domain, messages),
+      undefined,
+      "saveThread",
+    ).catch((error) => {
+      console.warn("Failed to save thread after retries:", error);
+      toast.error(
+        "Failed to save conversation. Some messages may be lost on reload.",
+      );
+    });
   }
 
   useEffect(() => {
@@ -213,9 +238,19 @@ export function Home() {
               createdAt: Date.now(),
             };
             const next = [...cur, errorMsg];
-            if (domainRef.current) saveThread(domainRef.current, next);
+            if (domainRef.current) safelyStoreThread(domainRef.current, next);
             return next;
           });
+
+          setLoading((s) => ({ ...s, pending: false }));
+          setPendingAssistantId(null);
+          setInputLocked(false);
+          if (spinnerTimeoutRef.current) {
+            try {
+              clearTimeout(spinnerTimeoutRef.current);
+            } catch {}
+            spinnerTimeoutRef.current = null;
+          }
         } else if (typeof nextCss === "string") {
           const derived = parseThemeFromCss(nextCss);
 
@@ -257,7 +292,7 @@ export function Home() {
                 } as any,
               ];
             }
-            if (domainRef.current) saveThread(domainRef.current, next);
+            if (domainRef.current) safelyStoreThread(domainRef.current, next);
             return next;
           });
         }
@@ -311,11 +346,23 @@ export function Home() {
               createdAt: Date.now(),
             };
             const next = [...cur, errorMsg];
-            if (domainRef.current) saveThread(domainRef.current, next);
+            if (domainRef.current) safelyStoreThread(domainRef.current, next);
             return next;
           });
+
+          setLoading((s) => ({ ...s, pending: false }));
+          setPendingAssistantId(null);
+          setInputLocked(false);
+          if (spinnerTimeoutRef.current) {
+            try {
+              clearTimeout(spinnerTimeoutRef.current);
+            } catch {}
+            spinnerTimeoutRef.current = null;
+          }
         } else {
+          console.log("🔍 DEBUG: Raw CSS from AI:", nextCss);
           const derived = parseThemeFromCss(nextCss);
+          console.log("🔍 DEBUG: Parsed theme tokens:", derived);
 
           if (warning) {
             toast.warning(warning);
@@ -358,7 +405,7 @@ export function Home() {
                 } as any,
               ];
             }
-            if (domainRef.current) saveThread(domainRef.current, next);
+            if (domainRef.current) safelyStoreThread(domainRef.current, next);
             return next;
           });
         }
@@ -383,7 +430,7 @@ export function Home() {
             const next = cur.map((m) =>
               m.css === nextCss ? { ...m, text: m.text + " (Applied)" } : m,
             );
-            if (domainRef.current) saveThread(domainRef.current, next);
+            if (domainRef.current) safelyStoreThread(domainRef.current, next);
             return next;
           });
         }
@@ -460,7 +507,7 @@ export function Home() {
           ...cur,
           { id: uId, role: "user", text: userText, createdAt: Date.now() },
         ];
-        if (domain) saveThread(domain, next);
+        if (domain) safelyStoreThread(domain, next);
         return next;
       });
       setPendingAssistantId("new");
@@ -506,7 +553,7 @@ export function Home() {
           createdAt: Date.now(),
         };
         const next = [...cur, errorMsg];
-        if (domain) saveThread(domain, next);
+        if (domain) safelyStoreThread(domain, next);
         return next;
       });
     }
@@ -527,7 +574,7 @@ export function Home() {
         const next = cur.map((m) =>
           m.css === css ? { ...m, applied: true } : m,
         );
-        if (domain) saveThread(domain, next);
+        if (domain) safelyStoreThread(domain, next);
         return next;
       });
     } catch (e) {

@@ -97,7 +97,10 @@ function validateStorageKey(key: string): boolean {
 
 async function checkStorageAvailability(): Promise<boolean> {
   try {
-    if (!browser?.storage?.local) return false;
+    if (!browser?.storage?.local) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (!browser?.storage?.local) return false;
+    }
 
     const testKey = "__sitecn_storage_test__";
     const testValue = { timestamp: Date.now() };
@@ -158,9 +161,14 @@ async function storageGet<T>(
       console.error(`Storage operation failed: ${error.message}`, {
         operation: error.operation,
         key: error.key,
+        storageApiAvailable: !!browser?.storage?.local,
+        context: "storageGet",
       });
     } else {
-      console.error(`Unexpected storage error for key ${key}:`, error);
+      console.error(`Unexpected storage error for key ${key}:`, error, {
+        storageApiAvailable: !!browser?.storage?.local,
+        context: "storageGet",
+      });
     }
     return null;
   }
@@ -399,4 +407,38 @@ export async function getUiThemeName(): Promise<string | null> {
 
 export async function setUiThemeName(name: string): Promise<void> {
   await storageSet(uiThemeNameKey, name);
+}
+
+/**
+ * Safe storage operation wrapper that handles common sidepanel initialization issues
+ */
+export async function withStorageRetry<T>(
+  operation: () => Promise<T>,
+  fallback: T,
+  operationName: string = "storage operation",
+): Promise<T> {
+  let retries = 3;
+  let delay = 100;
+
+  while (retries > 0) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof StorageUnavailableError && retries > 1) {
+        console.warn(
+          `${operationName} failed, retrying in ${delay}ms...`,
+          error,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay *= 2;
+        retries--;
+        continue;
+      }
+
+      console.error(`${operationName} failed after retries:`, error);
+      return fallback;
+    }
+  }
+
+  return fallback;
 }

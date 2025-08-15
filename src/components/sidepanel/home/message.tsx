@@ -1,7 +1,8 @@
+import { tokensFromCssEnhanced } from "@/components/sidepanel/editor/live-preview";
 import {
   ChatThemePreview,
   ThemePreviewTokens,
-} from "@/components/sidepanel/home/chat/theme-preview";
+} from "@/components/sidepanel/home/theme-preview";
 import { cn } from "@/lib/utils";
 
 export type ThreadMessage = {
@@ -22,7 +23,19 @@ export function Message({
   onApply?: (css: string) => void;
 }) {
   const isAssistant = m.role === "assistant";
-  const hasCss = !!m.css && !m.applied;
+
+  const tokens = m.css ? tokensFromCssEnhanced(m.css) : null;
+
+  const hasValidTheme =
+    tokens &&
+    ((tokens.light &&
+      Object.keys(tokens.light).length > 0 &&
+      Object.values(tokens.light).some((v) => v && v.startsWith("#"))) ||
+      (tokens.dark &&
+        Object.keys(tokens.dark).length > 0 &&
+        Object.values(tokens.dark).some((v) => v && v.startsWith("#"))));
+
+  const hasThemePalette = hasValidTheme && !!m.css && !m.applied;
 
   return (
     <div
@@ -33,7 +46,7 @@ export function Message({
     >
       <div
         className={cn(
-          "border-border/50 text-muted-foreground w-full mx-2 rounded-md border transition-colors md:w-fit",
+          "border-border/50 text-muted-foreground w-full rounded-md border transition-colors md:w-fit",
           isAssistant ? "bg-muted/50" : "bg-accent/50",
         )}
       >
@@ -42,12 +55,15 @@ export function Message({
             {m.text}
           </div>
         ) : null}
-        {m.theme ? (
+        {hasValidTheme ? (
           <div className="p-2">
-            <ChatThemePreview tokens={m.theme} />
+            <ChatThemePreview
+              lightTokens={tokens?.light || {}}
+              darkTokens={tokens?.dark || {}}
+            />
           </div>
         ) : null}
-        {hasCss && onApply && (
+        {hasThemePalette && onApply && (
           <div className="p-2">
             <button
               onClick={() => onApply(m.css!)}

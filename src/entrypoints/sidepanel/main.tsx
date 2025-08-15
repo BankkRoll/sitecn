@@ -1,7 +1,7 @@
 import { ThemeProvider, useTheme } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { MessageType } from "@/entrypoints/types";
-import { getUiThemeName } from "@/lib/storage";
+import { getUiThemeName, withStorageRetry } from "@/lib/storage";
 import {
   ensureThemeRegistryInjected,
   getThemeClassName,
@@ -19,7 +19,11 @@ function useUiThemeClass(): string {
     let disposed = false;
     (async () => {
       try {
-        const initial = await getUiThemeName();
+        const initial = await withStorageRetry(
+          () => getUiThemeName(),
+          null,
+          "getUiThemeName",
+        );
         if (!disposed)
           setUiThemeClass(initial ? getThemeClassName(initial) : "");
       } catch {}

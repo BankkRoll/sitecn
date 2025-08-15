@@ -79,6 +79,8 @@ export enum SitecnMode {
   ANALYZE_CSS = "ANALYZE_CSS",
 }
 
+export type ChatMode = "base" | "preset" | "analyze";
+
 // -------------- Site theming & AI types --------------
 
 /**

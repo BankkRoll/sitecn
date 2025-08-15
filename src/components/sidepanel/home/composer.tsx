@@ -1,4 +1,4 @@
-import { BaseThemePicker } from "@/components/sidepanel/home/chat/base-theme-picker";
+import { BaseThemePicker } from "@/components/sidepanel/home/theme-select";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";

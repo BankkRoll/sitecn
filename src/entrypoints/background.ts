@@ -297,7 +297,6 @@ export default defineBackground(() => {
        * Handle ping messages from content scripts for connection testing
        */
       if ((message as any).messageType === "ping") {
-        // Simple ping response - content script is alive
         return true;
       }
       /**
