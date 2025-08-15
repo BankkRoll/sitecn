@@ -5,7 +5,6 @@ import { cn } from "@/lib/utils";
 type BaseTextareaProps = React.ComponentProps<"textarea">;
 
 type EnhancedTextareaProps = BaseTextareaProps & {
-  /** Optional panel rendered below the textarea (inside the same outer border). */
   bottomPanel?: React.ReactNode;
 };
 

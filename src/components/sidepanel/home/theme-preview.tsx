@@ -130,7 +130,6 @@ export function ChatThemePreview({
             </div>
           </AccordionTrigger>
           <AccordionContent className="px-4 pb-4">
-            {/* Single scroll area with side-by-side headers */}
             <div className="grid grid-cols-2 gap-4 mb-3">
               <div className="text-muted-foreground text-sm font-medium">
                 Light Mode
@@ -140,10 +139,8 @@ export function ChatThemePreview({
               </div>
             </div>
 
-            {/* Single unified scroll area */}
             <div className="max-h-48 overflow-y-auto">
               <div className="grid grid-cols-2 gap-4">
-                {/* Light Mode Column */}
                 <div className="pr-2 space-y-2">
                   {lightTokenKeys.map((key) => (
                     <Swatch
@@ -157,7 +154,6 @@ export function ChatThemePreview({
                   ))}
                 </div>
 
-                {/* Dark Mode Column */}
                 <div className="pr-2 space-y-2">
                   {darkTokenKeys.map((key) => (
                     <Swatch
