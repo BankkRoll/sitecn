@@ -15,21 +15,35 @@ import {
   setSiteEntry,
   type ChatMessage as StorageChatMessage,
 } from "@/lib/storage";
-import {
-  SYSTEM_PROMPT_ANALYZE,
-  SYSTEM_PROMPT_CUSTOM,
-  SYSTEM_PROMPT_PRESET,
-  buildAnalyzeThemePrompt,
-  buildCustomThemePrompt,
-  buildPresetThemePrompt,
-} from "@/lib/system-prompt";
+import { buildThemePrompt } from "@/lib/system-prompt";
 import { getRegistryThemeByName } from "@/lib/theme-registry";
 import { browser } from "wxt/browser";
+
+// Enhanced error handling types
+class SnapshotExtractionError extends Error {
+  constructor(
+    message: string,
+    public domain: string,
+    public tabId?: number,
+  ) {
+    super(message);
+    this.name = "SnapshotExtractionError";
+  }
+}
 
 /**
  * Streaming chat sessions keyed by domain. Each session maintains its own LM state.
  */
-const chatSessions: Record<string, any> = {};
+interface LanguageModelSession {
+  prompt: (input: { role: string; content: string }) => Promise<string>;
+  promptStreaming: (input: {
+    role: string;
+    content: string;
+  }) => AsyncIterable<string>;
+  destroy?: () => void;
+}
+
+const chatSessions: Record<string, LanguageModelSession> = {};
 
 /**
  * Tracks last known domain per tab to handle SPA navigations and early URL updates.
@@ -54,17 +68,119 @@ let lastModelStatusAt = 0;
 /**
  * Cached last known availability to reduce LM status traffic.
  */
-let lastModelAvailability:
+type ModelAvailability =
   | "unavailable"
   | "downloadable"
   | "downloading"
-  | "available" = "unavailable";
+  | "available";
+let lastModelAvailability: ModelAvailability = "unavailable";
 
 /**
  * Active sidepanel subscribers used to decide when to broadcast domain updates.
  */
 const openSidepanelPorts = new Set<string>();
 let modelStatusIntervalId: number | null = null;
+
+/**
+ * Race condition prevention and resource management
+ */
+// Track ongoing snapshot extractions to prevent duplicates
+const ongoingExtractions = new Map<
+  string,
+  Promise<StyleSnapshot | undefined>
+>();
+
+// Track active tabs to handle tab closure during operations
+const activeTabs = new Set<number>();
+
+// Track theme generation operations by domain
+const ongoingGenerations = new Map<string, Promise<void>>();
+
+// Cleanup for orphaned operations
+const operationTimeouts = new Map<string, NodeJS.Timeout>();
+
+// Model session cleanup tracking
+const activeModelSessions = new Map<string, any>();
+
+// Tab lifecycle management
+browser.tabs.onRemoved.addListener((tabId) => {
+  activeTabs.delete(tabId);
+  lastKnownDomainByTab.delete(tabId);
+  lastBroadcastDomainByTab.delete(tabId);
+
+  // Cleanup any ongoing operations for this tab
+  cleanupTabOperations(tabId);
+});
+
+browser.tabs.onCreated.addListener((tab) => {
+  if (tab.id) {
+    activeTabs.add(tab.id);
+  }
+});
+
+// Initialize active tabs
+(async () => {
+  try {
+    const tabs = await browser.tabs.query({});
+    tabs.forEach((tab) => {
+      if (tab.id) activeTabs.add(tab.id);
+    });
+  } catch {}
+})();
+
+function cleanupTabOperations(tabId: number) {
+  // Find and cleanup operations related to this tab
+  const domain = lastKnownDomainByTab.get(tabId);
+  if (domain) {
+    // Cancel ongoing extractions
+    ongoingExtractions.delete(domain);
+    ongoingGenerations.delete(domain);
+
+    // Clear timeouts
+    const extractionKey = `extraction_${domain}`;
+    const generationKey = `generation_${domain}`;
+
+    if (operationTimeouts.has(extractionKey)) {
+      clearTimeout(operationTimeouts.get(extractionKey)!);
+      operationTimeouts.delete(extractionKey);
+    }
+
+    if (operationTimeouts.has(generationKey)) {
+      clearTimeout(operationTimeouts.get(generationKey)!);
+      operationTimeouts.delete(generationKey);
+    }
+
+    // Cleanup model sessions
+    const sessionKey = domain;
+    if (activeModelSessions.has(sessionKey)) {
+      try {
+        const session = activeModelSessions.get(sessionKey);
+        session?.destroy?.();
+      } catch {}
+      activeModelSessions.delete(sessionKey);
+    }
+  }
+}
+
+// Enhanced CORS fetch with timeout and abort controller
+async function fetchWithTimeout(
+  url: string,
+  timeoutMs: number = 10000,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      cache: "no-cache",
+      mode: "cors",
+    });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 /**
  * Entry point for background service worker.
@@ -193,6 +309,14 @@ export default defineBackground(() => {
       if ((message as any)?.from === MessageFrom.background) {
         return true;
       }
+
+      /**
+       * Handle ping messages from content scripts for connection testing
+       */
+      if ((message as any).messageType === "ping") {
+        // Simple ping response - content script is alive
+        return true;
+      }
       /**
        * Extension icon clicked.
        */
@@ -279,131 +403,277 @@ export default defineBackground(() => {
           }
         }
         /**
-         * Generate a CSS theme for the current site. Sends preview only.
+         * Generate a theme for the current site. Handles base, preset, and analyze modes.
          */
-      } else if (message.messageType === MessageType.generateSiteCss) {
+      } else if (message.messageType === MessageType.generateTheme) {
+        console.log("🚀 === THEME GENERATION FLOW START ===");
+        console.log("📥 1. RECEIVED generateTheme request:", {
+          mode: message.payload?.mode,
+          domain: message.payload?.domain,
+          prompt: message.payload?.prompt,
+          hasBaseTheme: !!message.payload?.baseThemeName,
+          timestamp: new Date().toISOString(),
+        });
+
         let domain = message.payload?.domain as string;
         if (!domain) domain = await getActiveTabDomain();
         let snapshot: StyleSnapshot | undefined = message.payload?.snapshot as
           | StyleSnapshot
           | undefined;
-        if (!domain) return true;
+        const mode = message.payload?.mode || "base";
 
-        if (!snapshot) {
-          const activeTabs = await browser.tabs.query({
-            active: true,
-            currentWindow: true,
-          });
-          const active = activeTabs?.[0];
-          if (active?.id) {
-            await browser.tabs.sendMessage(active.id, {
-              messageType: MessageType.extractSiteSnapshot,
-              payload: { domain },
-            });
-            snapshot = await waitForSnapshot(domain, 5000);
-          }
+        console.log("🎯 2. DOMAIN RESOLUTION:", { domain, mode });
+
+        if (!domain) {
+          console.log("❌ 3. EARLY EXIT: No domain found");
+          return true;
         }
 
-        const currentEntry = (await getSiteEntry(domain)) || ({} as any);
-        const siteStylesheet = currentEntry.css || "";
+        if (!snapshot) {
+          console.log("📷 3. SNAPSHOT EXTRACTION NEEDED for:", domain);
+          try {
+            snapshot = await extractSnapshotWithRetry(domain, 3);
+            console.log("✅ 4. SNAPSHOT EXTRACTION SUCCESS:", {
+              domain,
+              hasSnapshot: !!snapshot,
+              snapshotSize: snapshot ? Object.keys(snapshot).length : 0,
+            });
+          } catch (error) {
+            console.error("❌ 4. SNAPSHOT EXTRACTION FAILED:", {
+              domain,
+              error: error instanceof Error ? error.message : String(error),
+              errorType:
+                error instanceof Error ? error.constructor.name : typeof error,
+            });
 
-        let css = "";
-        try {
-          css = await generateCssWithLanguageModel(
+            const errorMessage =
+              error instanceof Error ? error.message : String(error);
+            await broadcastToAll({
+              messageType: MessageType.themeGenerated,
+              payload: {
+                domain,
+                css: "",
+                error: `Failed to analyze site styles: ${errorMessage}`,
+              },
+              from: MessageFrom.background,
+            } as any);
+            console.log("📤 5. ERROR RESPONSE SENT to UI");
+            return true;
+          }
+        } else {
+          console.log("✅ 3. SNAPSHOT PROVIDED:", {
             domain,
-            snapshot,
-            message.payload?.baseThemeName,
-            message.payload?.prompt,
-            siteStylesheet,
-          );
-        } catch (e) {
-          console.error("LM generate failed, fallback to heuristic", e);
-          css = fallbackCssFromSnapshot(snapshot);
-        }
-
-        if (css) {
-          await broadcastToAll({
-            messageType: MessageType.siteCssPreview,
-            payload: { domain, css },
-            from: MessageFrom.background,
-          } as any);
-        }
-        /**
-         * Analyze current site styles and propose a themed CSS. Sends preview only.
-         */
-      } else if (message.messageType === MessageType.analyzeSiteStyles) {
-        let domain = message.payload?.domain as string;
-        if (!domain) domain = await getActiveTabDomain();
-        let snapshot: StyleSnapshot | undefined = message.payload?.snapshot as
-          | StyleSnapshot
-          | undefined;
-        if (!domain) return true;
-
-        if (!snapshot) {
-          const activeTabs = await browser.tabs.query({
-            active: true,
-            currentWindow: true,
+            snapshotKeys: Object.keys(snapshot),
           });
-          const active = activeTabs?.[0];
-          if (active?.id) {
-            await browser.tabs.sendMessage(active.id, {
-              messageType: MessageType.extractSiteSnapshot,
-              payload: { domain },
-            });
-            snapshot = await waitForSnapshot(domain, 5000);
-          }
         }
 
-        const currentEntry = (await getSiteEntry(domain)) || ({} as any);
-        const siteStylesheet = currentEntry.css || "";
+        // For analyze mode, we only need fresh site data, not stored themes
+        const siteStylesheet =
+          mode === "analyze" ? "" : (await getSiteEntry(domain))?.css || "";
+        console.log("📄 6. SITE STYLESHEET DECISION:", {
+          domain,
+          mode,
+          usingStoredCSS: mode !== "analyze",
+          stylesheetLength: siteStylesheet.length,
+        });
 
         try {
+          console.log("🤖 7. INITIALIZING AI MODEL...");
           const anyGlobal: any = globalThis as any;
           const LanguageModel = anyGlobal?.LanguageModel;
-          if (!LanguageModel)
+          if (!LanguageModel) {
             throw new Error("LanguageModel API not available");
+          }
+
           const availability = await LanguageModel.availability();
-          if (availability === "unavailable")
+          console.log("🔍 8. AI MODEL STATUS:", { availability });
+          if (availability === "unavailable") {
             throw new Error("Model unavailable");
+          }
+
+          console.log("🎨 9. BUILDING THEME PROMPT...");
           const base = pickRegistryTheme(message.payload?.baseThemeName);
-          const session = await LanguageModel.create({
-            initialPrompts: [
-              { role: "system", content: SYSTEM_PROMPT_ANALYZE },
-            ],
+          console.log("🏷️ 10. BASE THEME RESOLVED:", {
+            baseThemeName: message.payload?.baseThemeName,
+            hasBaseTheme: !!base,
           });
-          const userPrompt = buildAnalyzeThemePrompt({
+
+          console.log("📊 11. SNAPSHOT DATA ANALYSIS:", {
             domain,
-            snapshot,
-            baseTheme: base,
-            notes: String(message.payload?.notes || ""),
-            siteStylesheet,
+            hasSnapshot: !!snapshot,
+            snapshotKeys: snapshot ? Object.keys(snapshot) : [],
+            snapshotType: typeof snapshot,
           });
+
+          // Optimize snapshot: Remove Tailwind noise and limit data size
+          const optimizedSnapshot = snapshot
+            ? {
+                domain: snapshot.domain,
+                cssVariables: Object.fromEntries(
+                  Object.entries(snapshot.cssVariables || {})
+                    .filter(
+                      ([key]) =>
+                        !key.startsWith("--tw-") &&
+                        !key.startsWith("--chat-") &&
+                        !key.startsWith("--channel-"),
+                    )
+                    .slice(0, 10),
+                ),
+                computed: {
+                  bodyBg: snapshot.computed?.bodyBg,
+                  bodyColor: snapshot.computed?.bodyColor,
+                  linkColor: snapshot.computed?.linkColor,
+                  headingsColor: snapshot.computed?.headingsColor,
+                  borderRadiusSamples:
+                    snapshot.computed?.borderRadiusSamples?.slice(0, 3) || [],
+                  shadowSamples:
+                    snapshot.computed?.shadowSamples?.slice(0, 2) || [],
+                },
+                fonts: {
+                  families:
+                    snapshot.fonts?.families
+                      ?.filter((f) => f !== "inherit" && !f.includes("Emoji"))
+                      .slice(0, 3) || [],
+                },
+                paletteSamples: snapshot.paletteSamples?.slice(0, 8) || [],
+              }
+            : null;
+
+          console.log("🔍 OPTIMIZED SNAPSHOT:", {
+            originalKeys: snapshot
+              ? Object.keys(snapshot.cssVariables || {}).length
+              : 0,
+            optimizedKeys: optimizedSnapshot
+              ? Object.keys(optimizedSnapshot.cssVariables).length
+              : 0,
+            originalColors: snapshot?.paletteSamples?.length || 0,
+            optimizedColors: optimizedSnapshot?.paletteSamples?.length || 0,
+          });
+
+          const { systemPrompt, userPrompt } = buildThemePrompt({
+            mode: mode as "base" | "preset" | "analyze",
+            domain,
+            snapshot: optimizedSnapshot,
+            siteStylesheet,
+            baseTheme: base,
+            userText: String(message.payload?.prompt || ""),
+          });
+
+          console.log("🔍 USER PROMPT DEBUG:", {
+            userPromptStart: userPrompt.substring(0, 300),
+            userPromptEnd: userPrompt.substring(userPrompt.length - 100),
+            containsSnapshot: userPrompt.includes('"snapshot"'),
+            containsDomain: userPrompt.includes('"domain"'),
+            isValidJSON: (() => {
+              try {
+                JSON.parse(userPrompt);
+                return true;
+              } catch {
+                return false;
+              }
+            })(),
+          });
+
+          console.log("📝 12. AI PROMPT BUILT:", {
+            mode,
+            systemPromptLength: systemPrompt.length,
+            userPromptLength: userPrompt.length,
+            userPromptPreview: userPrompt.substring(0, 300),
+            userPromptSample: userPrompt.includes("[object Object]")
+              ? "⚠️ CONTAINS [object Object]"
+              : "✅ Valid JSON",
+          });
+
+          console.log("🧠 13. CREATING AI SESSION...");
+          const session = await LanguageModel.create({
+            initialPrompts: [{ role: "system", content: systemPrompt }],
+          });
+          console.log("✅ 14. AI SESSION CREATED");
+
+          console.log("💭 15. SENDING PROMPT TO AI...");
           const result = await session.prompt({
             role: "user",
             content: userPrompt,
           });
+          console.log("📨 16. AI RESPONSE RECEIVED:", {
+            responseLength: result ? String(result).length : 0,
+            responsePreview: result
+              ? String(result).substring(0, 200) + "..."
+              : "No response",
+          });
+
           session.destroy?.();
+
           const full = String(result || "");
           const analysis = full
             .replace(/^[\s\S]*?<analysis>/i, "")
             .replace(/<\/analysis>[\s\S]*$/i, "")
             .trim();
           const css = full
-            .replace(/^[\s\S]*?<css>/i, "")
-            .replace(/<\/css>[\s\S]*$/i, "")
+            .replace(/^[\s\S]*?<theme-palette>/i, "")
+            .replace(/<\/theme-palette>[\s\S]*$/i, "")
             .trim();
+
+          console.log("🎨 17. PARSING AI RESPONSE:", {
+            fullLength: full.length,
+            hasAnalysis: !!analysis,
+            analysisLength: analysis.length,
+            hasCss: !!css,
+            cssLength: css.length,
+          });
+
+          console.log("📤 18. BROADCASTING SUCCESS RESPONSE...");
           await broadcastToAll({
-            messageType: MessageType.siteAnalysis,
-            payload: { domain, analysis, css },
+            messageType: MessageType.themeGenerated,
+            payload: { domain, css, analysis: analysis || undefined },
             from: MessageFrom.background,
           } as any);
+          console.log("✅ 19. SUCCESS RESPONSE SENT to UI");
         } catch (e) {
-          await broadcastToAll({
-            messageType: MessageType.siteAnalysis,
-            payload: { domain, analysis: "Analysis failed", css: "" },
-            from: MessageFrom.background,
-          } as any);
+          console.error("❌ 20. THEME GENERATION ERROR:", {
+            error: e instanceof Error ? e.message : String(e),
+            errorType: e instanceof Error ? e.constructor.name : typeof e,
+            stack: e instanceof Error ? e.stack?.substring(0, 300) : undefined,
+          });
+
+          const errorMessage = e instanceof Error ? e.message : String(e);
+
+          // Try fallback for base/preset modes
+          if (mode !== "analyze" && snapshot) {
+            console.log("🔄 21. ATTEMPTING FALLBACK CSS...");
+            const fallbackCss = fallbackCssFromSnapshot(snapshot);
+            console.log("⚠️ 22. FALLBACK CSS GENERATED:", {
+              cssLength: fallbackCss.length,
+              cssPreview: fallbackCss.substring(0, 100) + "...",
+            });
+
+            await broadcastToAll({
+              messageType: MessageType.themeGenerated,
+              payload: {
+                domain,
+                css: fallbackCss,
+                warning:
+                  "AI generation failed, using fallback theme. Check Info tab for troubleshooting.",
+              },
+              from: MessageFrom.background,
+            } as any);
+            console.log("📤 23. FALLBACK RESPONSE SENT to UI");
+          } else {
+            console.log("📤 21. ERROR RESPONSE SENDING...");
+            await broadcastToAll({
+              messageType: MessageType.themeGenerated,
+              payload: {
+                domain,
+                css: "",
+                error: `Theme generation failed: ${errorMessage}`,
+              },
+              from: MessageFrom.background,
+            } as any);
+            console.log("❌ 22. ERROR RESPONSE SENT to UI");
+          }
         }
+        console.log("🏁 === THEME GENERATION FLOW END ===");
+
         /**
          * Query whether a domain has saved CSS and whether it's enabled.
          */
@@ -482,29 +752,28 @@ export default defineBackground(() => {
             } as any);
             return true;
           }
-          if (!chatSessions[domain]) {
-            chatSessions[domain] = await LanguageModel.create({
-              initialPrompts: [
-                { role: "system", content: SYSTEM_PROMPT_CUSTOM },
-              ],
-            });
-          }
-          const session = chatSessions[domain];
-
           const currentEntry = (await getSiteEntry(domain)) || ({} as any);
           const siteStylesheet = currentEntry.css || "";
 
-          const prompt = buildCustomThemePrompt({
+          const { systemPrompt, userPrompt } = buildThemePrompt({
+            mode: "base",
             domain,
             snapshot: null,
             siteStylesheet,
             userText,
           });
 
+          if (!chatSessions[domain]) {
+            chatSessions[domain] = await LanguageModel.create({
+              initialPrompts: [{ role: "system", content: systemPrompt }],
+            });
+          }
+          const session = chatSessions[domain];
+
           let acc = "";
           const stream = session.promptStreaming({
             role: "user",
-            content: prompt,
+            content: userPrompt,
           });
           for await (const chunk of stream) {
             acc = String(chunk);
@@ -515,7 +784,9 @@ export default defineBackground(() => {
             } as any);
           }
 
-          const cssMatch = acc.match(/<css>([\s\S]*?)<\/css>/i);
+          const cssMatch = acc.match(
+            /<theme-palette>([\s\S]*?)<\/theme-palette>/i,
+          );
           if (cssMatch) {
             const css = cssMatch[1].trim();
             await browser.runtime.sendMessage({
@@ -610,6 +881,91 @@ export default defineBackground(() => {
           payload: { domain: d },
         } as any;
         sendResponse(response);
+        return true;
+        /**
+         * Handle CORS-blocked stylesheets by fetching them from background script.
+         */
+      } else if (message.messageType === MessageType.fetchCorsStylesheets) {
+        const urls = message.payload?.urls as string[];
+        if (Array.isArray(urls)) {
+          try {
+            const fetchedStyles = await Promise.allSettled(
+              urls.map(async (url) => {
+                try {
+                  // Use enhanced fetch with timeout and abort controller
+                  const response = await fetchWithTimeout(url, 10000);
+
+                  if (!response.ok) {
+                    throw new Error(
+                      `HTTP ${response.status}: ${response.statusText}`,
+                    );
+                  }
+
+                  const css = await response.text();
+
+                  // Validate CSS content size
+                  const MAX_CSS_SIZE = 5 * 1024 * 1024; // 5MB limit
+                  if (css.length > MAX_CSS_SIZE) {
+                    console.warn(
+                      `Large CSS fetched from ${url}: ${css.length} bytes, truncating`,
+                    );
+                    return {
+                      url,
+                      css: css.substring(0, MAX_CSS_SIZE),
+                      success: true,
+                      truncated: true,
+                    };
+                  }
+
+                  return { url, css, success: true };
+                } catch (error: any) {
+                  console.warn(
+                    `Failed to fetch CORS stylesheet ${url}:`,
+                    error,
+                  );
+
+                  // Categorize error types for better handling
+                  let errorType = "unknown";
+                  if (error.name === "AbortError") {
+                    errorType = "timeout";
+                  } else if (
+                    error.message?.includes("network") ||
+                    error.message?.includes("fetch")
+                  ) {
+                    errorType = "network";
+                  } else if (error.message?.includes("CORS")) {
+                    errorType = "cors";
+                  }
+
+                  return {
+                    url,
+                    css: "",
+                    success: false,
+                    error: String(error),
+                    errorType,
+                  };
+                }
+              }),
+            );
+
+            const results = fetchedStyles.map((result) =>
+              result.status === "fulfilled"
+                ? result.value
+                : {
+                    url: "",
+                    css: "",
+                    success: false,
+                    error: "Promise rejected",
+                    errorType: "promise_failed",
+                  },
+            );
+
+            sendResponse({ corsStylesheets: results });
+          } catch (error) {
+            console.error("Failed to fetch CORS stylesheets:", error);
+            sendResponse({ corsStylesheets: [], error: String(error) });
+          }
+        }
         return true;
         /**
          * Register a sidepanel subscription for domain broadcasts.
@@ -796,31 +1152,250 @@ async function broadcastActiveDomainForTab(
 }
 
 /**
+ * Extract snapshot with retry logic and proper error handling.
+ * Prevents race conditions by tracking ongoing extractions.
+ */
+async function extractSnapshotWithRetry(
+  domain: string,
+  maxRetries: number = 3,
+): Promise<StyleSnapshot | undefined> {
+  // Check if extraction is already in progress for this domain
+  if (ongoingExtractions.has(domain)) {
+    console.log(
+      `🔄 Snapshot extraction already in progress for ${domain}, waiting for existing operation...`,
+    );
+    return await ongoingExtractions.get(domain);
+  }
+
+  console.log("📷 === SNAPSHOT EXTRACTION FLOW START ===");
+  console.log(`🚀 SNAPSHOT: Starting extraction for ${domain}`);
+
+  // Create extraction promise
+  const extractionPromise = (async (): Promise<StyleSnapshot | undefined> => {
+    let lastError: Error | undefined;
+    const extractionKey = `extraction_${domain}`;
+
+    // Set operation timeout
+    const timeoutId = setTimeout(() => {
+      console.warn(`Snapshot extraction timeout for ${domain}`);
+      ongoingExtractions.delete(domain);
+    }, 60000); // 1 minute max
+
+    operationTimeouts.set(extractionKey, timeoutId);
+
+    try {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          console.log(
+            `📸 SNAPSHOT: Attempt ${attempt}/${maxRetries} for ${domain}`,
+          );
+
+          const activeTabsQuery = await browser.tabs.query({
+            active: true,
+            currentWindow: true,
+          });
+          const active = activeTabsQuery?.[0];
+
+          if (!active?.id) {
+            throw new SnapshotExtractionError(
+              `No active tab found for ${domain}`,
+              domain,
+            );
+          }
+
+          // Check if tab is still active and valid
+          if (!activeTabs.has(active.id)) {
+            throw new SnapshotExtractionError(
+              `Tab ${active.id} is no longer active for ${domain}`,
+              domain,
+              active.id,
+            );
+          }
+
+          // Verify tab URL still matches domain
+          const currentDomain = extractDomain(active.url || "");
+          if (currentDomain !== domain) {
+            throw new SnapshotExtractionError(
+              `Domain changed during extraction: ${currentDomain} !== ${domain}`,
+              domain,
+              active.id,
+            );
+          }
+
+          // Test if content script is available before sending extraction request
+          try {
+            await browser.tabs.sendMessage(active.id, {
+              messageType: "ping",
+              payload: { domain },
+            });
+          } catch (pingError) {
+            // Content script not available, try to inject it
+            try {
+              await browser.scripting.executeScript({
+                target: { tabId: active.id },
+                files: ["content-scripts/content.js"],
+              });
+
+              // Wait a bit for injection to complete
+              await new Promise((resolve) => setTimeout(resolve, 500));
+            } catch (injectionError) {
+              throw new SnapshotExtractionError(
+                `Failed to inject content script: ${injectionError instanceof Error ? injectionError.message : String(injectionError)}`,
+                domain,
+                active.id,
+              );
+            }
+          }
+
+          // Wait for response with appropriate timeout
+          const timeout = Math.min(5000 + attempt * 2000, 15000); // Increasing timeout per attempt
+          console.log(
+            `⏰ SNAPSHOT: Waiting for response (${timeout}ms timeout)`,
+          );
+
+          // Start waiting BEFORE sending the message
+          const snapshotPromise = waitForSnapshot(domain, timeout);
+
+          // Send extraction request
+          console.log(`📤 SNAPSHOT: Sending request to tab ${active.id}`);
+          await browser.tabs.sendMessage(active.id, {
+            messageType: MessageType.extractSiteSnapshot,
+            payload: { domain },
+          });
+
+          // Now await the response
+          const snapshot = await snapshotPromise;
+
+          if (snapshot) {
+            console.log(
+              `✅ SNAPSHOT: SUCCESS on attempt ${attempt}! Keys:`,
+              Object.keys(snapshot),
+            );
+            return snapshot;
+          } else {
+            console.log(
+              `⏰ SNAPSHOT: TIMEOUT after ${timeout}ms on attempt ${attempt}`,
+            );
+            throw new SnapshotExtractionError(
+              `Snapshot extraction timed out after ${timeout}ms for ${domain}`,
+              domain,
+              active.id,
+            );
+          }
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          console.warn(
+            `❌ SNAPSHOT: Attempt ${attempt} failed:`,
+            lastError.message,
+          );
+
+          if (attempt === maxRetries) {
+            break;
+          }
+
+          // Wait before retry (exponential backoff)
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.pow(2, attempt) * 1000),
+          );
+        }
+      }
+
+      const finalError = new SnapshotExtractionError(
+        `Failed to extract snapshot after ${maxRetries} attempts: ${lastError?.message}`,
+        domain,
+      );
+      finalError.cause = lastError;
+      throw finalError;
+    } finally {
+      // Cleanup
+      console.log(`🧹 SNAPSHOT: Cleaning up extraction for ${domain}`);
+      clearTimeout(timeoutId);
+      operationTimeouts.delete(extractionKey);
+      ongoingExtractions.delete(domain);
+      console.log("📷 === SNAPSHOT EXTRACTION FLOW END ===");
+    }
+  })();
+
+  // Track the ongoing extraction
+  ongoingExtractions.set(domain, extractionPromise);
+
+  return extractionPromise;
+}
+
+/**
  * Await a snapshot response for a domain, or resolve undefined on timeout.
  */
 async function waitForSnapshot(
   domain: string,
   timeoutMs: number,
 ): Promise<StyleSnapshot | undefined> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let done = false;
+
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      browser.runtime.onMessage.removeListener(listener);
+    };
+
     const timer = setTimeout(() => {
       if (!done) {
         done = true;
+        cleanup();
+        console.warn(
+          `Snapshot extraction timeout for ${domain} after ${timeoutMs}ms`,
+        );
         resolve(undefined);
       }
     }, timeoutMs);
 
     const listener = (msg: any) => {
+      console.log(`📡 SNAPSHOT LISTENER: Message received for ${domain}:`, {
+        messageType: msg?.messageType,
+        payloadDomain: msg?.payload?.domain,
+        isMatch:
+          msg?.messageType === MessageType.siteSnapshotExtracted &&
+          msg?.payload?.domain === domain,
+        done: done,
+      });
+
       if (
         msg?.messageType === MessageType.siteSnapshotExtracted &&
         msg?.payload?.domain === domain
       ) {
         if (!done) {
           done = true;
-          clearTimeout(timer);
-          browser.runtime.onMessage.removeListener(listener);
-          resolve(msg.payload.snapshot as StyleSnapshot);
+          cleanup();
+
+          console.log(
+            `📥 SNAPSHOT LISTENER: Processing response for ${domain}:`,
+            {
+              hasSnapshot: !!msg.payload.snapshot,
+              hasError: !!msg.payload.error,
+              snapshotKeys: msg.payload.snapshot
+                ? Object.keys(msg.payload.snapshot)
+                : [],
+              timestamp: Date.now(),
+            },
+          );
+
+          if (msg.payload.error) {
+            console.log(
+              `❌ SNAPSHOT LISTENER: Rejecting with error: ${msg.payload.error}`,
+            );
+            reject(new Error(`Content script error: ${msg.payload.error}`));
+          } else if (msg.payload.snapshot) {
+            console.log(`✅ SNAPSHOT LISTENER: Resolving with snapshot`);
+            resolve(msg.payload.snapshot as StyleSnapshot);
+          } else {
+            console.log(
+              `⚠️ SNAPSHOT LISTENER: Resolving with undefined (no snapshot or error)`,
+            );
+            resolve(undefined);
+          }
+        } else {
+          console.warn(
+            `⏰ Late snapshot response received for ${domain}, ignoring`,
+          );
         }
       }
     };
@@ -831,7 +1406,7 @@ async function waitForSnapshot(
 /**
  * Generate a CSS theme using the built-in LanguageModel API with proper
  * system prompts and contextual inputs (snapshot, siteStylesheet, baseTheme).
- * Returns only the <css>...</css> contents.
+ * Returns only the <theme-palette>...</theme-palette> contents.
  */
 async function generateCssWithLanguageModel(
   domain: string,
@@ -848,25 +1423,24 @@ async function generateCssWithLanguageModel(
   if (availability === "unavailable") throw new Error("Model unavailable");
 
   const base = pickRegistryTheme(baseThemeName);
-  const system = base ? SYSTEM_PROMPT_PRESET : SYSTEM_PROMPT_CUSTOM;
-  const prompt = base
-    ? buildPresetThemePrompt({
-        domain,
-        snapshot,
-        baseTheme: base,
-        userText,
-        siteStylesheet,
-      })
-    : buildCustomThemePrompt({ domain, snapshot, userText, siteStylesheet });
+  const mode = base ? "preset" : "base";
+  const { systemPrompt, userPrompt } = buildThemePrompt({
+    mode,
+    domain,
+    snapshot,
+    baseTheme: base,
+    userText,
+    siteStylesheet,
+  });
 
   const session = await LanguageModel.create({
-    initialPrompts: [{ role: "system", content: system }],
+    initialPrompts: [{ role: "system", content: systemPrompt }],
   });
-  const result = await session.prompt({ role: "user", content: prompt });
+  const result = await session.prompt({ role: "user", content: userPrompt });
   session.destroy?.();
   const css = String(result || "")
-    .replace(/^[\s\S]*?<css>/i, "")
-    .replace(/<\/css>[\s\S]*$/i, "")
+    .replace(/^[\s\S]*?<theme-palette>/i, "")
+    .replace(/<\/theme-palette>[\s\S]*$/i, "")
     .trim();
   if (!css) throw new Error("Empty CSS");
   return css;
@@ -912,6 +1486,9 @@ async function injectCssIntoActiveDomainTabs(
   } catch {}
 }
 
+/**
+ * Remove CSS from active domain tabs.
+ */
 async function removeCssFromActiveDomainTabs(
   domain: string,
   css: string,

@@ -27,7 +27,7 @@ export function Message({
   return (
     <div
       className={cn(
-        "w-full px-2 md:px-4",
+        "w-full",
         isAssistant ? "flex justify-start" : "flex justify-end",
       )}
     >

@@ -46,31 +46,279 @@ export const zModelAvailability = z.object({
   at: z.number(),
 });
 export type ModelAvailability = z.infer<typeof zModelAvailability>;
+// Enhanced error classes for better debugging
+class StorageError extends Error {
+  constructor(
+    message: string,
+    public operation: string,
+    public key?: string,
+  ) {
+    super(message);
+    this.name = "StorageError";
+  }
+}
+
+class StorageQuotaError extends StorageError {
+  constructor(key?: string) {
+    super("Storage quota exceeded", "write", key);
+    this.name = "StorageQuotaError";
+  }
+}
+
+class StorageUnavailableError extends StorageError {
+  constructor() {
+    super("Browser storage API unavailable", "access");
+    this.name = "StorageUnavailableError";
+  }
+}
+
+// Sanitize storage key to ensure Chrome storage compatibility
+function sanitizeStorageKey(key: string): string {
+  if (!key || key.length === 0) return key;
+
+  // Replace invalid characters with underscores
+  // Chrome storage doesn't allow: : " / \ | ? * < > and control characters
+  const sanitized = key.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_");
+
+  // Ensure key length is within Chrome's limits
+  const maxLength = 512;
+  if (sanitized.length > maxLength) {
+    return sanitized.substring(0, maxLength);
+  }
+
+  return sanitized;
+}
+
+// Validate storage key to prevent issues with invalid characters
+function validateStorageKey(key: string): boolean {
+  // Chrome storage keys have specific limitations
+  const maxLength = 512;
+  const invalidChars = /[<>:"/\\|?*\x00-\x1f]/;
+
+  if (!key || key.length === 0) return false;
+  if (key.length > maxLength) return false;
+  if (invalidChars.test(key)) return false;
+
+  return true;
+}
+
+// Check if browser storage is available and functional
+async function checkStorageAvailability(): Promise<boolean> {
+  try {
+    if (!browser?.storage?.local) return false;
+
+    // Test write/read/delete cycle with a safe test key
+    const testKey = "__sitecn_storage_test__";
+    const testValue = { timestamp: Date.now() };
+
+    await browser.storage.local.set({ [testKey]: testValue });
+    const result = await browser.storage.local.get(testKey);
+    await browser.storage.local.remove(testKey);
+
+    return result[testKey]?.timestamp === testValue.timestamp;
+  } catch {
+    return false;
+  }
+}
+
+// Storage availability cache
+let storageAvailable: boolean | null = null;
+let lastStorageCheck = 0;
+const STORAGE_CHECK_TTL = 60000; // 1 minute
+
+async function ensureStorageAvailable(): Promise<void> {
+  const now = Date.now();
+
+  // Use cached result if recent
+  if (storageAvailable !== null && now - lastStorageCheck < STORAGE_CHECK_TTL) {
+    if (!storageAvailable) {
+      throw new StorageUnavailableError();
+    }
+    return;
+  }
+
+  // Check storage availability
+  storageAvailable = await checkStorageAvailability();
+  lastStorageCheck = now;
+
+  if (!storageAvailable) {
+    throw new StorageUnavailableError();
+  }
+}
+
 async function storageGet<T>(
   key: string,
   schema: z.ZodType<T>,
 ): Promise<T | null> {
   try {
-    const obj = (await browser.storage.local.get(key)) as any;
-    const raw = obj?.[key];
+    // Sanitize and validate key format
+    const sanitizedKey = sanitizeStorageKey(key);
+    if (!validateStorageKey(sanitizedKey)) {
+      console.warn(
+        `Invalid storage key format: ${key} (sanitized: ${sanitizedKey})`,
+      );
+      return null;
+    }
+
+    // Ensure storage is available
+    await ensureStorageAvailable();
+
+    const obj = (await browser.storage.local.get(sanitizedKey)) as any;
+    const raw = obj?.[sanitizedKey];
     const parsed = schema.safeParse(raw);
     return parsed.success ? parsed.data : null;
-  } catch {
+  } catch (error) {
+    if (error instanceof StorageError) {
+      console.error(`Storage operation failed: ${error.message}`, {
+        operation: error.operation,
+        key: error.key,
+      });
+    } else {
+      console.error(`Unexpected storage error for key ${key}:`, error);
+    }
     return null;
   }
 }
 
+// Concurrent operation tracking to prevent conflicts
+const pendingOperations = new Map<string, Promise<any>>();
+
 async function storageSet<T>(key: string, value: T): Promise<void> {
+  // Sanitize and validate key format
+  const sanitizedKey = sanitizeStorageKey(key);
+  if (!validateStorageKey(sanitizedKey)) {
+    throw new StorageError(
+      `Invalid storage key format: ${key} (sanitized: ${sanitizedKey})`,
+      "write",
+      sanitizedKey,
+    );
+  }
+
+  // Ensure storage is available
+  await ensureStorageAvailable();
+
+  // Check for concurrent operations on the same key
+  const operationKey = `set_${sanitizedKey}`;
+  if (pendingOperations.has(operationKey)) {
+    // Wait for existing operation to complete
+    try {
+      await pendingOperations.get(operationKey);
+    } catch {
+      // Continue with operation even if previous failed
+    }
+  }
+
+  // Create operation promise
+  const operation = (async () => {
+    try {
+      // Estimate data size for quota checking
+      const serialized = JSON.stringify({ [sanitizedKey]: value });
+      const estimatedSize = new Blob([serialized]).size;
+
+      // Check if data is extremely large (>1MB)
+      const MAX_ITEM_SIZE = 1024 * 1024; // 1MB
+      if (estimatedSize > MAX_ITEM_SIZE) {
+        console.warn(
+          `Large storage write attempted for key ${key} (sanitized: ${sanitizedKey}): ${estimatedSize} bytes`,
+        );
+      }
+
+      await browser.storage.local.set({ [sanitizedKey]: value });
+    } catch (error: any) {
+      // Handle specific Chrome storage errors
+      if (error?.message?.includes("QUOTA_EXCEEDED")) {
+        throw new StorageQuotaError(sanitizedKey);
+      }
+
+      if (error?.message?.includes("MAX_WRITE_OPERATIONS_PER_MINUTE")) {
+        throw new StorageError("Rate limit exceeded", "write", sanitizedKey);
+      }
+
+      if (error?.message?.includes("MAX_ITEMS")) {
+        throw new StorageError(
+          "Maximum items limit exceeded",
+          "write",
+          sanitizedKey,
+        );
+      }
+
+      throw new StorageError(
+        `Write operation failed: ${error.message}`,
+        "write",
+        sanitizedKey,
+      );
+    }
+  })();
+
+  // Track the operation
+  pendingOperations.set(operationKey, operation);
+
   try {
-    await browser.storage.local.set({ [key]: value });
-  } catch {}
+    await operation;
+  } finally {
+    // Clean up tracking
+    pendingOperations.delete(operationKey);
+  }
 }
 
 async function storageRemove(key: string): Promise<void> {
   try {
-    await browser.storage.local.remove(key);
-  } catch {}
+    // Sanitize and validate key format
+    const sanitizedKey = sanitizeStorageKey(key);
+    if (!validateStorageKey(sanitizedKey)) {
+      throw new StorageError(
+        `Invalid storage key format: ${key} (sanitized: ${sanitizedKey})`,
+        "remove",
+        sanitizedKey,
+      );
+    }
+
+    // Ensure storage is available
+    await ensureStorageAvailable();
+
+    // Check for concurrent operations on the same key
+    const operationKey = `remove_${sanitizedKey}`;
+    if (pendingOperations.has(operationKey)) {
+      // Wait for existing operation to complete
+      try {
+        await pendingOperations.get(operationKey);
+      } catch {
+        // Continue with operation even if previous failed
+      }
+    }
+
+    // Create operation promise
+    const operation = browser.storage.local.remove(sanitizedKey);
+
+    // Track the operation
+    pendingOperations.set(operationKey, operation);
+
+    try {
+      await operation;
+    } finally {
+      // Clean up tracking
+      pendingOperations.delete(operationKey);
+    }
+  } catch (error) {
+    if (error instanceof StorageError) {
+      console.error(`Storage remove failed: ${error.message}`, {
+        operation: error.operation,
+        key: error.key,
+      });
+      throw error;
+    } else {
+      const sanitizedKey = sanitizeStorageKey(key);
+      console.error(
+        `Unexpected storage remove error for key ${key} (sanitized: ${sanitizedKey}):`,
+        error,
+      );
+      throw new StorageError(`Remove operation failed`, "remove", sanitizedKey);
+    }
+  }
 }
+
+// Export error classes for use in other modules
+export { StorageError, StorageQuotaError, StorageUnavailableError };
 
 export async function getSiteEntry(
   domain: string,

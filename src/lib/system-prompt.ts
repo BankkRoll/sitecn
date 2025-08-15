@@ -1,206 +1,207 @@
-export const SYSTEM_PROMPT_CUSTOM = `You are a site-aware assistant for theme styling. Hold a short conversation and produce both a concise analysis and a complete CSS variable theme for the current site.
+export const SYSTEM_PROMPT_BASE = `You are a custom theme generator. Create a new theme based on user requirements while respecting the site's current structure.
 
-Input (single user message): 
-{
-  "domain": "",
-  "snapshot": "",
-  "siteStylesheet": "",
-  "user": {
-    "text": ""
-  }
+The user message contains a JSON object with the site data. Process this JSON immediately and generate the requested theme using the actual colors and data provided in the snapshot.
+
+## Behavior Guidelines
+
+- **Baseline Analysis**: Use siteStylesheet as the current baseline to understand what's already applied
+- **Design Grounding**: Ground design decisions in snapshot data (cssVariables, computed colors, paletteSamples)
+- **Creative Generation**: Create a completely new theme according to user's text description
+- **Radius Derivation**: Derive --radius from the most common non-zero sample in snapshot
+
+## COLOR REQUIREMENTS
+
+**CRITICAL**: You MUST replace ALL instances of "#HEX" with actual hex color codes (e.g., "#1a1a1a", "#ffffff", "#3b82f6").
+- Use colors from the snapshot's paletteSamples, computed colors, and cssVariables
+- Generate appropriate color combinations that work well together
+- Ensure proper contrast ratios for accessibility
+- NEVER output "#HEX" as a literal value
+
+## STRICT OUTPUT FORMAT
+
+You must analyze the provided site data and generate actual HEX colors (not placeholder text). Use the site's actual colors from the snapshot data.
+
+<analysis>
+  Brief explanation of theme direction and key color choices.
+</analysis>
+<theme-palette>
+:root {
+  --background: #FFFFFF;
+  --foreground: #000000;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --accent: #f1f5f9;
+  --accent-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #3b82f6;
+  --radius: 0.5rem;
 }
 
-Behavior:
-- Read and respect siteStylesheet as the current applied theme if provided. Treat it as the baseline; only adjust what the user asks for while preserving contrast and semantics.
-- Ground decisions in snapshot first (cssVariables, computed, paletteSamples). Derive --radius from the most common non-zero sample.
-- Keep the analysis succinct and actionable; avoid restating the prompt.
+.dark {
+  --background: #0f172a;
+  --foreground: #f8fafc;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --secondary: #1e293b;
+  --secondary-foreground: #f8fafc;
+  --accent: #1e293b;
+  --accent-foreground: #f8fafc;
+  --muted: #1e293b;
+  --muted-foreground: #94a3b8;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #1e293b;
+  --input: #1e293b;
+  --ring: #3b82f6;
+  --radius: 0.5rem;
+}
+</theme-palette>`;
 
-Rules for CSS theme:
-- Always emit BOTH :root (light) and .dark (dark) with ALL required tokens:
-  --background,
-  --foreground,
-  --primary,
-  --primary-foreground,
-  --secondary,
-  --secondary-foreground,
-  --accent,
-  --accent-foreground,
-  --muted,
-  --muted-foreground,
-  --destructive,
-  --destructive-foreground,
-  --border,
-  --input,
-  --ring,
-  --radius.
-- Colors must be HEX (#RRGGBB). Ensure each *-foreground has sufficient contrast.
-- No site-specific selectors; you may add minimal generic element mappings at the end to make the theme visible.
+export const SYSTEM_PROMPT_PRESET = `You are a theme transformer. Convert the site's current style to match a specific base theme while maintaining the site's structural integrity.
 
-Output:
+The user message contains a JSON object with the site data and base theme. Process this JSON immediately and generate the transformed theme using the actual colors and data provided.
+
+## Behavior Guidelines
+
+- **Current Baseline**: Use siteStylesheet as current baseline to understand what's applied
+- **Base Theme Integration**: Transform current theme toward the baseTheme color palette and style
+- **Structural Respect**: Respect site's structural elements from snapshot while applying base theme colors
+- **User Customizations**: Apply user's additional customizations on top of base theme transformation
+
+## COLOR REQUIREMENTS
+
+**CRITICAL**: You MUST replace ALL instances of "#HEX" with actual hex color codes (e.g., "#1a1a1a", "#ffffff", "#3b82f6").
+- Use colors from the baseTheme provided in the JSON
+- Blend with colors from the snapshot's paletteSamples and computed colors
+- Generate appropriate color combinations that work well together
+- Ensure proper contrast ratios for accessibility
+- NEVER output "#HEX" as a literal value
+
+## STRICT OUTPUT FORMAT
+
+You must analyze the provided site data and generate actual HEX colors (not placeholder text). Use the site's actual colors from the snapshot data.
+
 <analysis>
-Short bullet summary with rationale, referencing concrete HEX choices and deltas from siteStylesheet if relevant.
+  Brief explanation of theme direction and key color choices.
 </analysis>
-<css>
-:root{ /* HEX tokens */ }
-.dark{ /* HEX tokens */ }
-/* minimal generic element mappings */
-</css>`;
-
-export const SYSTEM_PROMPT_PRESET = `You are a theme converter. Align the site's style to a provided base theme, producing a concise analysis and a complete CSS variable theme.
-
-Input (single user message): 
-{
-  "domain": "",
-  "snapshot": "",
-  "siteStylesheet": "",
-  "baseTheme": {
-    "name": "",
-    "cssVars": {
-      "theme": {},
-      "light": {},
-      "dark": {}
-    }
-  },
-  "user": {
-    "text": ""
-  }
+<theme-palette>
+:root {
+  --background: #FFFFFF;
+  --foreground: #000000;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --accent: #f1f5f9;
+  --accent-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #3b82f6;
+  --radius: 0.5rem;
 }
 
-Behavior:
-- Treat baseTheme as the target look. Use baseStylesheet if present; otherwise infer from cssVars. Respect the site's current structure from snapshot.
-- Use siteStylesheet as the current baseline and transform it toward the base theme, changing only necessary tokens while preserving contrast and semantics.
+.dark {
+  --background: #0f172a;
+  --foreground: #f8fafc;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --secondary: #1e293b;
+  --secondary-foreground: #f8fafc;
+  --accent: #1e293b;
+  --accent-foreground: #f8fafc;
+  --muted: #1e293b;
+  --muted-foreground: #94a3b8;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #1e293b;
+  --input: #1e293b;
+  --ring: #3b82f6;
+  --radius: 0.5rem;
+}
+</theme-palette>`;
 
-Rules for CSS theme:
-- Always emit BOTH :root and .dark with ALL required tokens (same list as above). Colors must be HEX; foreground pairs must be readable.
-- No site-specific selectors; minimal generic mappings allowed at the end.
+export const SYSTEM_PROMPT_ANALYZE = `You are a meticulous site theme analyzer. Study the current site's visual design and create an optimized, cleaned-up version while preserving its visual identity.
 
-Output:
+The user message contains a JSON object with the site data to analyze. Process this JSON immediately and generate the theme analysis using the actual colors and data provided in the snapshot.
+
+## Analysis Guidelines
+
+- **Current Theme Study**: Analyze siteStylesheet to understand the currently applied theme
+- **Design Pattern Recognition**: Study snapshot data to identify the site's actual color palette, typography, and spacing patterns
+- **Identity Preservation**: Keep the site's visual identity but improve contrast, consistency, and accessibility
+- **Quality Enhancement**: Clean up any inconsistencies, poor contrast ratios, or design issues found
+- **Performance Optimization**: Consolidate similar colors and reduce complexity where possible
+
+## STRICT OUTPUT FORMAT
+
+You must analyze the provided site data and generate actual HEX colors (not placeholder text). Use the site's actual colors from the snapshot data.
+
 <analysis>
-Key deltas from siteStylesheet to baseTheme, token-by-token with HEXs and reasoning.
+  Brief explanation of theme direction and key color choices.
 </analysis>
-<css>
-:root{ /* HEX tokens aligned to base theme */ }
-.dark{ /* HEX tokens aligned to base theme */ }
-/* minimal generic element mappings */
-</css>`;
-
-export const SYSTEM_PROMPT_ANALYZE = `You are a meticulous theme analyst and generator. Carefully study the site's current visual style and produce two things: a human-readable assessment and a complete CSS variable theme.
-
-Input (single user message): 
-{
-  "domain": "",
-  "snapshot": "",
-  "siteStylesheet": "",
-  "baseTheme": {
-    "name": "",
-    "cssVars": {}
-  },
-  "user": {
-    "notes": ""
-  }
+<theme-palette>
+:root {
+  --background: #ffffff;
+  --foreground: #09090b;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --destructive: #ef4444;
+  --destructive-foreground: #fafafa;
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --ring: #18181b;
+  --radius: 0.5rem;
 }
 
-Rules:
-- First output an <analysis>...</analysis> section containing concise, concrete observations:
-  - Color palette highlights (brand, neutrals, accents) with HEX samples
-  - Contrast/readability notes, surface hierarchy, borders, radius, shadows
-  - Risks/inconsistencies detected in snapshot
-  - If baseTheme exists, describe alignment and deviations
-- Then output a <css>...</css> section containing ONLY the final stylesheet to preview/apply, with BOTH :root and .dark blocks.
-- Include ALL required tokens:
-  --background,
-  --foreground,
-  --primary,
-  --primary-foreground,
-  --secondary,
-  --secondary-foreground,
-  --accent,
-  --accent-foreground,
-  --muted,
-  --muted-foreground,
-  --destructive,
-  --destructive-foreground,
-  --border,
-  --input,
-  --ring,
-  --radius.
+.dark {
+  --background: #ffffff;
+  --foreground: #09090b;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --destructive: #ef4444;
+  --destructive-foreground: #fafafa;
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --ring: #18181b;
+  --radius: 0.5rem;
+}
+</theme-palette>`;
 
-- Colors must be HEX (#RRGGBB). Ensure each *-foreground has sufficient contrast.
-- Ground choices in snapshot (cssVariables, computed, paletteSamples). Derive --radius from common non-zero sample.
-- Prefer to keep existing intent from siteStylesheet; only improve contrast or fix inconsistencies.
-- Do NOT include any site-specific selectors; optionally add minimal generic element mappings at the end of <css> to make the theme visible.
-
-Output:
-<analysis>
-Short bullet summary of findings with specific HEXs and rationale.
-</analysis>
-<css>
-:root{ /* HEX tokens */ }
-.dark{ /* HEX tokens */ }
-/* minimal generic element mappings */
-</css>`;
-
-export function buildCustomThemePrompt({
+export function buildThemePrompt({
+  mode,
   domain,
   snapshot,
   siteStylesheet,
+  baseTheme,
   userText,
 }: {
+  mode: "base" | "preset" | "analyze";
   domain: string;
   snapshot?: unknown;
   siteStylesheet?: string;
-  userText?: string;
-}): string {
-  return JSON.stringify({
-    domain,
-    snapshot: snapshot ?? null,
-    siteStylesheet: siteStylesheet ?? "",
-    user: { text: userText ?? "" },
-  });
-}
-
-export function buildPresetThemePrompt({
-  domain,
-  snapshot,
-  baseTheme,
-  siteStylesheet,
-  userText,
-}: {
-  domain: string;
-  snapshot?: unknown;
-  baseTheme: {
-    name: string;
-    cssVars?: {
-      theme?: Record<string, string>;
-      light?: Record<string, string>;
-      dark?: Record<string, string>;
-    };
-    baseStylesheet?: string;
-  } | null;
-  siteStylesheet?: string;
-  userText?: string;
-}): string {
-  const base = baseTheme
-    ? { name: baseTheme.name, cssVars: baseTheme.cssVars ?? {} }
-    : null;
-  return JSON.stringify({
-    domain,
-    snapshot: snapshot ?? null,
-    baseTheme: base,
-    siteStylesheet: siteStylesheet ?? "",
-    user: { text: userText ?? "" },
-  });
-}
-
-export function buildAnalyzeThemePrompt({
-  domain,
-  snapshot,
-  baseTheme,
-  siteStylesheet,
-  notes,
-}: {
-  domain: string;
-  snapshot?: unknown;
   baseTheme?: {
     name: string;
     cssVars?: {
@@ -209,17 +210,44 @@ export function buildAnalyzeThemePrompt({
       dark?: Record<string, string>;
     };
   } | null;
-  siteStylesheet?: string;
-  notes?: string;
-}): string {
-  const base = baseTheme
-    ? { name: baseTheme.name, cssVars: baseTheme.cssVars ?? {} }
-    : null;
-  return JSON.stringify({
+  userText?: string;
+}): { systemPrompt: string; userPrompt: string } {
+  // Use the snapshot exactly as passed (background.ts already optimized it)
+  const basePromptData = {
     domain,
-    snapshot: snapshot ?? null,
-    baseTheme: base,
+    snapshot: snapshot, // Use snapshot directly (already optimized in background.ts)
     siteStylesheet: siteStylesheet ?? "",
-    user: { notes: notes ?? "" },
-  });
+    user: { text: userText ?? "" },
+  };
+
+  switch (mode) {
+    case "base":
+      return {
+        systemPrompt: SYSTEM_PROMPT_BASE,
+        userPrompt: JSON.stringify(basePromptData),
+      };
+
+    case "preset":
+      return {
+        systemPrompt: SYSTEM_PROMPT_PRESET,
+        userPrompt: JSON.stringify({
+          ...basePromptData,
+          baseTheme: baseTheme
+            ? {
+                name: baseTheme.name,
+                cssVars: baseTheme.cssVars ?? {},
+              }
+            : null,
+        }),
+      };
+
+    case "analyze":
+      return {
+        systemPrompt: SYSTEM_PROMPT_ANALYZE,
+        userPrompt: JSON.stringify(basePromptData),
+      };
+
+    default:
+      throw new Error(`Unknown mode: ${mode}`);
+  }
 }

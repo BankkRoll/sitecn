@@ -19,10 +19,12 @@ import {
 } from "@/lib/storage";
 import { listRegistryThemes } from "@/lib/theme-registry";
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { browser } from "wxt/browser";
 
 export function Home() {
   const [domain, setDomain] = useState<string>("");
+  const domainRef = useRef<string>("");
   const hasDomain = !!domain;
   const [prompt, setPrompt] = useState<string>("");
   const [mode, setMode] = useState<ChatMode>("base");
@@ -83,13 +85,8 @@ export function Home() {
         vars[k] = String(v).trim();
         return "";
       });
-      return {
-        background: vars["background"] || "",
-        foreground: vars["foreground"] || "",
-        primary: vars["primary"] || "",
-        accent: vars["accent"] || "",
-        border: vars["border"] || "",
-      };
+      // Return ALL parsed CSS variables, not just a subset
+      return Object.keys(vars).length > 0 ? vars : undefined;
     } catch {
       return undefined;
     }
@@ -114,6 +111,11 @@ export function Home() {
     const arr = await loadThread(forDomain);
     setMessages(arr as ThreadMessage[]);
   }
+
+  useEffect(() => {
+    // Keep live domain for message listener comparisons
+    domainRef.current = domain;
+  }, [domain]);
 
   useEffect(() => {
     (async () => {
@@ -149,7 +151,9 @@ export function Home() {
               setModelAvailability(availability);
               await setCachedModelAvailability(availability);
             }
-          } catch {
+          } catch (e) {
+            console.warn("Failed to check model availability:", e);
+            setModelAvailability("unavailable");
           } finally {
             pending.current.model = false;
           }
@@ -178,7 +182,12 @@ export function Home() {
                 setModelAvailability(availability);
                 await setCachedModelAvailability(availability);
               }
-            } catch {
+            } catch (e) {
+              console.warn(
+                "Failed to check model availability on domain change:",
+                e,
+              );
+              setModelAvailability("unavailable");
             } finally {
               pending.current.model = false;
             }
@@ -186,16 +195,39 @@ export function Home() {
         }
       } else if (
         msg?.messageType === MessageType.siteCssStatus &&
-        msg?.payload?.domain === domain
+        msg?.payload?.domain === domainRef.current
       ) {
         // ignore in Home
       } else if (
         msg?.messageType === MessageType.siteCssPreview &&
-        msg?.payload?.domain === domain
+        msg?.payload?.domain === domainRef.current
       ) {
         const nextCss = msg?.payload?.css;
-        if (typeof nextCss === "string") {
+        const error = msg?.payload?.error;
+        const warning = msg?.payload?.warning;
+
+        if (error) {
+          // Handle error case
+          toast.error(error);
+          setMessages((cur) => {
+            const errorMsg: ThreadMessage = {
+              id: `error_${Date.now()}`,
+              role: "assistant",
+              text: `Error: ${error}`,
+              createdAt: Date.now(),
+            };
+            const next = [...cur, errorMsg];
+            if (domainRef.current) saveThread(domainRef.current, next);
+            return next;
+          });
+        } else if (typeof nextCss === "string") {
           const derived = parseThemeFromCss(nextCss);
+
+          // Show warning if present
+          if (warning) {
+            toast.warning(warning);
+          }
+
           setMessages((cur) => {
             let next = cur;
             if (
@@ -208,7 +240,9 @@ export function Home() {
                       ...m,
                       css: nextCss,
                       theme: derived,
-                      text: m.text || "Theme generated",
+                      text: warning
+                        ? `Theme generated with fallback: ${warning}`
+                        : m.text || "Theme generated",
                     }
                   : m,
               );
@@ -219,29 +253,136 @@ export function Home() {
                 {
                   id: aId,
                   role: "assistant",
-                  text: "Theme generated",
+                  text: warning
+                    ? `Theme generated with fallback: ${warning}`
+                    : "Theme generated",
                   css: nextCss,
                   theme: derived,
                   createdAt: Date.now(),
                 } as any,
               ];
             }
-            if (domain) saveThread(domain, next);
+            if (domainRef.current) saveThread(domainRef.current, next);
             return next;
           });
-          setLoading((s) => ({ ...s, pending: false }));
-          setPendingAssistantId(null);
-          setInputLocked(false);
-          if (spinnerTimeoutRef.current) {
-            try {
-              clearTimeout(spinnerTimeoutRef.current);
-            } catch {}
-            spinnerTimeoutRef.current = null;
+        }
+
+        setLoading((s) => ({ ...s, pending: false }));
+        setPendingAssistantId(null);
+        setInputLocked(false);
+        if (spinnerTimeoutRef.current) {
+          try {
+            clearTimeout(spinnerTimeoutRef.current);
+          } catch {}
+          spinnerTimeoutRef.current = null;
+        }
+      } else if (
+        msg?.messageType === MessageType.themeGenerated &&
+        msg?.payload?.domain === domainRef.current
+      ) {
+        const nextCss = msg?.payload?.css;
+        const analysis = msg?.payload?.analysis;
+        const error = msg?.payload?.error;
+        const warning = msg?.payload?.warning;
+
+        if (error) {
+          // Handle error case with specific error type detection
+          let userFriendlyError = error;
+          let troubleshootingHint = "";
+
+          if (error.includes("Could not establish connection")) {
+            userFriendlyError = "Content script connection failed";
+            troubleshootingHint =
+              "The page may have security restrictions. Try refreshing the page or check the Info tab for troubleshooting.";
+          } else if (error.includes("Content Security Policy")) {
+            userFriendlyError = "Site security policy blocks analysis";
+            troubleshootingHint =
+              "This site has strict security policies that prevent style analysis.";
+          } else if (error.includes("DOM not ready")) {
+            userFriendlyError = "Page not fully loaded";
+            troubleshootingHint =
+              "Please wait for the page to finish loading and try again.";
+          } else if (error.includes("Model unavailable")) {
+            userFriendlyError = "AI model not available";
+            troubleshootingHint =
+              "Check that Chrome AI is enabled in chrome://flags/#prompt-api-for-gemini-nano";
           }
+
+          toast.error(userFriendlyError);
+          setMessages((cur) => {
+            const errorMsg: ThreadMessage = {
+              id: `error_${Date.now()}`,
+              role: "assistant",
+              text: `❌ ${userFriendlyError}${troubleshootingHint ? `\n\n💡 ${troubleshootingHint}` : ""}`,
+              createdAt: Date.now(),
+            };
+            const next = [...cur, errorMsg];
+            if (domainRef.current) saveThread(domainRef.current, next);
+            return next;
+          });
+        } else {
+          const derived = parseThemeFromCss(nextCss);
+
+          // Show warning if present
+          if (warning) {
+            toast.warning(warning);
+          }
+
+          setMessages((cur) => {
+            let next = cur;
+            if (
+              pendingAssistantId &&
+              cur.some((m) => m.id === pendingAssistantId)
+            ) {
+              next = cur.map((m) =>
+                m.id === pendingAssistantId
+                  ? {
+                      ...m,
+                      text:
+                        analysis ||
+                        (warning
+                          ? `Theme generated with fallback: ${warning}`
+                          : m.text || "Theme generated"),
+                      css: nextCss || m.css,
+                      theme: derived || m.theme,
+                    }
+                  : m,
+              );
+            } else {
+              next = [
+                ...cur,
+                {
+                  id: `a_${Date.now()}`,
+                  role: "assistant",
+                  text:
+                    analysis ||
+                    (warning
+                      ? `Theme generated with fallback: ${warning}`
+                      : "Theme generated"),
+                  css: nextCss || undefined,
+                  theme: derived || undefined,
+                  createdAt: Date.now(),
+                } as any,
+              ];
+            }
+            if (domainRef.current) saveThread(domainRef.current, next);
+            return next;
+          });
+        }
+
+        // Always end the thinking state
+        setLoading((s) => ({ ...s, pending: false }));
+        setPendingAssistantId(null);
+        setInputLocked(false);
+        if (spinnerTimeoutRef.current) {
+          try {
+            clearTimeout(spinnerTimeoutRef.current);
+          } catch {}
+          spinnerTimeoutRef.current = null;
         }
       } else if (
         msg?.messageType === MessageType.setSiteCss &&
-        msg?.payload?.domain === domain
+        msg?.payload?.domain === domainRef.current
       ) {
         const nextCss = msg?.payload?.css;
         if (typeof nextCss === "string") {
@@ -250,18 +391,18 @@ export function Home() {
             const next = cur.map((m) =>
               m.css === nextCss ? { ...m, text: m.text + " (Applied)" } : m,
             );
-            if (domain) saveThread(domain, next);
+            if (domainRef.current) saveThread(domainRef.current, next);
             return next;
           });
         }
       } else if (
         msg?.messageType === MessageType.enableSiteCss &&
-        msg?.payload?.domain === domain
+        msg?.payload?.domain === domainRef.current
       ) {
         // ignore in Home
       } else if (
         msg?.messageType === MessageType.disableSiteCss &&
-        msg?.payload?.domain === domain
+        msg?.payload?.domain === domainRef.current
       ) {
         // ignore in Home
       } else if (msg?.messageType === MessageType.modelStatus) {
@@ -286,8 +427,28 @@ export function Home() {
       } catch {}
     }
     spinnerTimeoutRef.current = window.setTimeout(() => {
+      console.warn("Theme generation timed out after 60 seconds");
       setLoading((s) => ({ ...s, pending: false }));
       setPendingAssistantId(null);
+      setInputLocked(false);
+
+      // Notify user of timeout
+      toast.error(
+        "Theme generation timed out. This might indicate an issue with the AI model or site analysis.",
+      );
+
+      // Add timeout message to chat
+      setMessages((cur) => {
+        const timeoutMsg: ThreadMessage = {
+          id: `timeout_${Date.now()}`,
+          role: "assistant",
+          text: "Theme generation timed out after 60 seconds. Please try again or check the Info tab for troubleshooting.",
+          createdAt: Date.now(),
+        };
+        const next = [...cur, timeoutMsg];
+        if (domainRef.current) saveThread(domainRef.current, next);
+        return next;
+      });
     }, 60000) as unknown as number;
   }
 
@@ -314,26 +475,53 @@ export function Home() {
       });
       setPendingAssistantId("new");
       setInputLocked(true);
-      await ensureModelReady();
-      if (mode === "analyze") {
-        await browser.runtime.sendMessage({
-          messageType: MessageType.analyzeSiteStyles,
-          payload: { domain, baseThemeName, notes: prompt },
-        } as any);
-      } else {
-        await browser.runtime.sendMessage({
-          messageType: MessageType.generateSiteCss,
-          payload: {
-            domain,
-            prompt,
-            baseThemeName: mode === "preset" ? baseThemeName : "",
-          },
-        } as any);
+
+      const modelReady = await ensureModelReady();
+      if (!modelReady) {
+        throw new Error(
+          "AI model is not available. Please check your Chrome version and enable the Prompt API flag.",
+        );
       }
+
+      await browser.runtime.sendMessage({
+        messageType: MessageType.generateTheme,
+        payload: {
+          domain,
+          mode,
+          prompt,
+          baseThemeName: mode === "preset" ? baseThemeName : undefined,
+        },
+      } as any);
       startPendingSpinner();
     } catch (e: any) {
+      console.error("handleSend failed:", e);
       setLoading((s) => ({ ...s, pending: false }));
       setInputLocked(false);
+      setPendingAssistantId(null);
+
+      // Clear any pending spinner
+      if (spinnerTimeoutRef.current) {
+        clearTimeout(spinnerTimeoutRef.current);
+        spinnerTimeoutRef.current = null;
+      }
+
+      // Show user-friendly error message
+      const errorMessage =
+        e?.message || "Failed to send message. Please try again.";
+      toast.error(errorMessage);
+
+      // Add error message to chat
+      setMessages((cur) => {
+        const errorMsg: ThreadMessage = {
+          id: `error_${Date.now()}`,
+          role: "assistant",
+          text: `Error: ${errorMessage}`,
+          createdAt: Date.now(),
+        };
+        const next = [...cur, errorMsg];
+        if (domain) saveThread(domain, next);
+        return next;
+      });
     }
   }
 

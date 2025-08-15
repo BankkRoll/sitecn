@@ -99,7 +99,7 @@ export function ChatMessages({
   }
 
   return (
-    <div className="mx-auto w-full px-2 space-y-2 md:px-4">
+    <div className="mx-auto w-full space-y-2">
       {items.map((m) => (
         <Message key={m.id} m={m} onApply={onApply} />
       ))}

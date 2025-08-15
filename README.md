@@ -4,6 +4,7 @@ A Chrome extension that provides Built-In Chrome AI (Google Gemini) powered them
 
 <div align="center">
     <img height="500" alt="image" src="https://github.com/user-attachments/assets/b2290cf3-f841-4bbb-a432-14322c10b0e0" />
+    <img height="500" alt="image" src="https://github.com/user-attachments/assets/c3dbadc9-69f0-4fc1-89aa-95e9a93aac9a" />
 </div>
 
 ## Features
@@ -12,15 +13,15 @@ A Chrome extension that provides Built-In Chrome AI (Google Gemini) powered them
 
 - **Local AI-Powered Theme Generation**: Uses Chrome's built-in LanguageModel API for on-device AI processing - No servers, no API keys, all local
 - **Multiple Generation Modes**:
-  - **Base Mode**: Freeform prompt
-  - **Preset Mode**: Start with a registry theme
-  - **Analyze Mode**: Site snapshot analysis
+  - **Base Mode**: Freeform custom theme creation from user descriptions
+  - **Preset Mode**: Transform existing registry themes with custom modifications  
+  - **Analyze Mode**: Intelligent site analysis with optimization suggestions
 - **Real-time Preview**: Live CSS preview with immediate application to websites
 - **Domain-specific Storage**: Themes are stored and managed per website domain
 - **Chat Interface**: Conversational AI interface for theme refinement
 - **Theme Export**: Copy generated CSS for external use
 - **Settings Customization**: Configure AI model parameters
-- 
+
 ### Technical Features
 
 - **Chrome Side Panel**: Integrated side panel interface for seamless theming
@@ -28,6 +29,9 @@ A Chrome extension that provides Built-In Chrome AI (Google Gemini) powered them
 - **Theme Registry Integration**: Access to TweakCN's curated theme collection
 - **Responsive Design**: Mobile-optimized interface with adaptive layouts
 - **Dark/Light Mode**: Built-in theme switching for the extension UI
+- **Advanced Style Extraction**: Comprehensive CSS analysis including CORS handling
+- **Error Recovery**: Robust error handling with fallback mechanisms
+- **Performance Optimization**: Caching, retry logic, and efficient DOM operations
 
 ## Quick Start
 
@@ -148,48 +152,133 @@ pnpm compile          # TypeScript compilation check
 
 </details>
 
+## Architecture Overview
+
+### System Components
+
+The extension consists of three main components that work together:
+
+- **Background Script** (`background.ts`) - Service worker handling AI processing, storage, and message routing
+- **Content Script** (`content.ts`) - Site style extraction and DOM manipulation  
+- **Sidepanel UI** (`main.tsx`) - React-based interface for user interaction
+
+### Mode Comparison
+
+| Feature | Base Mode | Preset Mode | Analyze Mode |
+|---------|-----------|-------------|--------------|
+| **Input** | Custom prompt | Registry theme + modifications | Automatic site analysis |
+| **AI Prompt** | `SYSTEM_PROMPT_BASE` | `SYSTEM_PROMPT_PRESET` | `SYSTEM_PROMPT_ANALYZE` |
+| **Use Case** | Brand new themes | Adapt existing themes | Optimize current styles |
+| **Output** | Fresh CSS design | Modified registry theme | Cleaned/improved CSS |
+| **User Effort** | High (describe vision) | Medium (pick base + tweaks) | Low (automatic analysis) |
+
 ## Usage
 
-### Basic Workflow
+### Complete Workflow
 
-The extension provides three distinct modes for theme generation, each with its own workflow:
+The extension provides three distinct modes for theme generation, each optimized for different use cases:
 
-#### 1. Base Mode - Freeform Theme Generation
+#### 1. Base Mode - Custom Theme Creation
 
-> **Basic Flow:** `Website` → `Sidepanel` → `Base Mode` → `Describe Theme` → `AI Generates CSS` → `Preview` → `Apply/Edit/Export`
+```
+User Input → Site Analysis → Custom AI Generation → CSS Output → Application
+```
 
-#### 2. Preset Mode - Start from Registry Theme
+**Detailed Flow:**
+1. **Navigation** - Open sidepanel, select "Base" mode
+2. **Prompt Entry** - Describe your desired theme (e.g., "dark cyberpunk with neon accents")
+3. **Site Extraction** - Content script analyzes current page styles via `document.styleSheets`
+4. **AI Processing** - Background script uses `SYSTEM_PROMPT_BASE` with site context
+5. **CSS Generation** - AI creates complete `:root` and `.dark` CSS variables
+6. **Preview** - Live preview shows color swatches and theme tokens
+7. **Application** - Apply directly to site or edit in CSS editor
 
-> **Basic Flow:** `Website` → `Sidepanel` → `Preset Mode` → `Choose Registry Theme` → `Describe Changes` → `AI Adapts` → `Preview` → `Apply/Edit/Export`
+#### 2. Preset Mode - Registry Theme Adaptation
 
-#### 3. Analyze Mode - Current Style Analysis + Chat
+```
+Theme Selection → User Modifications → AI Adaptation → CSS Output → Application
+```
 
-> **Basic Flow:** `Website` → `Sidepanel` → `Analyze Mode` → `AI Snapshot` → `Style Analysis` → `Report` → `Propose Theme` → `Preview` → `Apply/Edit/Export/Chat`
+**Detailed Flow:**
+1. **Mode Selection** - Choose "Preset" mode in sidepanel
+2. **Base Theme** - Select from 100+ curated themes via dropdown
+3. **Customization** - Describe modifications (e.g., "make it warmer, add purple accents")
+4. **Site Context** - Content script provides current page structure
+5. **AI Transformation** - `SYSTEM_PROMPT_PRESET` adapts base theme to site + user requests
+6. **CSS Output** - Maintains base theme characteristics while applying changes
+7. **Application** - Preview and apply the adapted theme
+
+#### 3. Analyze Mode - Intelligent Site Optimization
+
+```
+Automatic Analysis → AI Examination → Improvement Report → Optimized CSS → Application
+```
+
+**Detailed Flow:**
+1. **Auto-trigger** - Select "Analyze" mode (automatically starts analysis)
+2. **Deep Extraction** - Comprehensive style analysis including unused CSS detection
+3. **AI Analysis** - `SYSTEM_PROMPT_ANALYZE` studies site design patterns
+4. **Report Generation** - Detailed analysis of colors, typography, spacing, accessibility
+5. **CSS Optimization** - Improved theme with better contrast, consistency, and performance
+6. **Review & Apply** - Read analysis report and apply optimized theme
 
 ### Theme Application Flow
 
-> **Basic Flow:** `Generated CSS` → `Live Preview` → `Apply/Edit/Export` → `Validation` → `Storage` → `Injection`
-
 ```mermaid
-flowchart LR
-    A[🎨 Generated CSS] --> B[👁️ Live Preview] --> C{🎯 What to do?}
+flowchart TD
+    A[👤 User] --> B[🎨 Select Mode]
+    B --> C{Mode Type?}
     
-    C -->|✅ Apply| D[💉 Apply to site] --> K[💾 Save to storage] --> L[💉 Inject into active tabs] --> M[🎯 Theme active on site]
-    C -->|✏️ Edit| E[📝 Edit in CSS editor] --> G[✅ Validate CSS syntax] --> H{🔍 Valid CSS?}
-    C -->|📤 Export| F[📋 Copy CSS to clipboard] --> N[📄 CSS ready for external use]
+    C -->|Base| D[✏️ Write Custom Prompt]
+    C -->|Preset| E[🎨 Choose Base Theme + Modify]
+    C -->|Analyze| F[🔍 Auto-analyze Site]
     
-    H -->|✅ Yes| I[🔄 Update preview] --> C
-    H -->|❌ No| J[⚠️ Show error message]
+    D --> G[📤 Send Request]
+    E --> G
+    F --> G
+    
+    G --> H[🌐 Extract Site Styles]
+    H --> I[🤖 AI Processing]
+    I --> J[📜 Generate CSS]
+    J --> K[👁️ Preview Theme]
+    K --> L{User Action?}
+    
+    L -->|✅ Apply| M[💾 Save to Domain]
+    L -->|✏️ Edit| N[📝 CSS Editor]
+    L -->|📤 Export| O[📋 Copy CSS]
+    
+    M --> P[💉 Inject to Site]
+    N --> Q[🔄 Live Preview]
+    Q --> L
 ```
 
 ## Troubleshooting
 
 ### Common Issues
 
+#### Extension Setup
 - **Extension not loading**: Ensure Chrome 116+ and check extension permissions
 - **AI not responding**: Verify `chrome://flags/#prompt-api-for-gemini-nano` is enabled
-- **Themes not applying**: Check if the site allows content scripts
+- **Model unavailable**: Visit `chrome://on-device-internals` to check download status
 - **Build errors**: Ensure Node.js 18+ and pnpm are installed
+
+#### Theme Generation
+- **Themes not applying**: Check if the site allows content scripts or has CSP restrictions
+- **Empty CSS output**: AI model may need enabling - check model settings in Info tab
+- **Slow generation**: Large sites require more processing time, especially on first analysis
+- **CORS errors**: Extension automatically handles cross-origin stylesheets via background fetching
+
+#### Performance Issues
+- **Memory usage**: AI models require ~22GB disk space and 4GB+ VRAM for optimal performance
+- **Slow extraction**: Complex sites with many stylesheets may take 10-15 seconds to analyze
+- **Chat timeouts**: 60-second timeout prevents infinite waits - retry if needed
+
+### Debug Mode
+
+For development debugging, check browser console for detailed logs:
+- Background script logs: Extension's service worker console
+- Content script logs: Website's main console  
+- Sidepanel logs: Extension popup's console
 
 ### Getting Help
 
@@ -210,17 +299,31 @@ We welcome contributions! Please follow these guidelines:
 
 ### Development Guidelines
 
-- Use TypeScript for all new code
-- Follow the existing code style and patterns
-- Write clean, maintainable code
-- Add appropriate documentation for new features
-- Test changes across different Chrome versions
+- **TypeScript First**: Use TypeScript for all new code with proper type definitions
+- **React Patterns**: Follow React hooks and functional component patterns  
+- **Message Types**: Add new message types to `types.ts` with proper payload interfaces
+- **Error Handling**: Include comprehensive error handling with user feedback
+- **Performance**: Consider on-device AI limitations and optimize for efficiency
+- **Testing**: Test across different websites and Chrome versions
+- **Documentation**: Document new features and update README accordingly
+
+### Code Architecture Rules
+
+- **Background Script**: Handle all AI processing, storage, and cross-tab coordination
+- **Content Script**: Focus on DOM interaction and style extraction only
+- **Sidepanel UI**: Pure React components with message passing to background
+- **Storage**: Use domain-keyed storage for themes and settings
+- **Error Recovery**: Always provide fallback mechanisms and user feedback
+
+### Contribution Steps
 
 1. Fork the repo
 2. Create feature branch: `git checkout -b feat/amazing-feature`
-3. Commit changes: `git commit -m 'Add amazing feature'`
-4. Push: `git push origin feat/amazing-feature`
-5. Open Pull Request
+3. Follow existing patterns in `background.ts`, `content.ts`, and React components
+4. Test on multiple websites with different CSS frameworks
+5. Commit changes: `git commit -m 'Add amazing feature'`
+6. Push: `git push origin feat/amazing-feature`
+7. Open Pull Request with detailed description
 
 ## License
 

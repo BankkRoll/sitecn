@@ -1,6 +1,7 @@
 import Header from "@/components/sidepanel/header";
 import Sidebar, { SidebarType } from "@/components/sidepanel/sidebar";
 import { useTheme } from "@/components/theme-provider";
+import "@/entrypoints/main.css";
 import { EditorPage } from "@/entrypoints/sidepanel/views/editor";
 import { Home } from "@/entrypoints/sidepanel/views/home";
 import { InfoPage } from "@/entrypoints/sidepanel/views/info";
@@ -9,7 +10,6 @@ import ExtMessage, { MessageType } from "@/entrypoints/types";
 import { getSiteEntry } from "@/lib/storage";
 import { useEffect, useState } from "react";
 import { browser } from "wxt/browser";
-import "@/entrypoints/main.css";
 
 export default () => {
   const [sidebarType, setSidebarType] = useState<SidebarType>(SidebarType.home);

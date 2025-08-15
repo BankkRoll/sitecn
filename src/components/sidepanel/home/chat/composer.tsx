@@ -39,10 +39,11 @@ export function Composer({
           value={prompt}
           onChange={(e) => onPromptChange(e.target.value)}
           onKeyDown={(e) => {
-            if (loading) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              onSend();
+              if (!loading && canSend && !readOnly) {
+                onSend();
+              }
             }
           }}
           rows={3}

@@ -13,108 +13,169 @@ import App from "./App.tsx";
 
 ensureThemeRegistryInjected();
 
-function UiThemeShell() {
-  const [cls, setCls] = useState<string>("");
-  const { theme } = useTheme();
+function useUiThemeClass(): string {
+  const [uiThemeClass, setUiThemeClass] = useState<string>("");
   useEffect(() => {
+    let disposed = false;
     (async () => {
       try {
         const initial = await getUiThemeName();
-        setCls(initial ? getThemeClassName(initial) : "");
-      } catch {}
-    })();
-    (async () => {
-      try {
-        const anyGlobal: any = globalThis as any;
-        const LanguageModel = anyGlobal?.LanguageModel;
-        if (LanguageModel?.availability) {
-          const availability = await LanguageModel.availability();
-          await browser.runtime.sendMessage({
-            messageType: MessageType.modelStatus,
-            payload: { availability },
-          } as any);
-        }
+        if (!disposed)
+          setUiThemeClass(initial ? getThemeClassName(initial) : "");
       } catch {}
     })();
     const onMsg = (msg: any) => {
       if (msg?.messageType === MessageType.changeUiTheme) {
         const name = String(msg?.payload?.name || "");
-        setCls(name ? getThemeClassName(name) : "");
+        setUiThemeClass(name ? getThemeClassName(name) : "");
       }
     };
-    browser.runtime.onMessage.addListener(onMsg as any);
-    const onVis = async () => {
-      if (document.visibilityState === "visible") {
-        try {
-          const anyGlobal: any = globalThis as any;
-          const LanguageModel = anyGlobal?.LanguageModel;
-          if (LanguageModel?.availability) {
-            const availability = await LanguageModel.availability();
+    try {
+      browser.runtime.onMessage.addListener(onMsg as any);
+    } catch {}
+    return () => {
+      disposed = true;
+      try {
+        browser.runtime.onMessage.removeListener(onMsg as any);
+      } catch {}
+    };
+  }, []);
+  return uiThemeClass;
+}
+
+function useModelAvailabilityReporter(): void {
+  useEffect(() => {
+    let disposed = false;
+    const report = async () => {
+      try {
+        const anyGlobal: any = globalThis as any;
+        const LanguageModel = anyGlobal?.LanguageModel;
+        if (LanguageModel?.availability) {
+          const availability = await LanguageModel.availability();
+          if (!disposed) {
             await browser.runtime.sendMessage({
               messageType: MessageType.modelStatus,
               payload: { availability },
             } as any);
           }
-        } catch {}
-      }
+        }
+      } catch {}
+    };
+    void report();
+    const onVis = () => {
+      if (document.visibilityState === "visible") void report();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => {
-      try {
-        browser.runtime.onMessage.removeListener(onMsg as any);
-      } catch {}
+      disposed = true;
       try {
         document.removeEventListener("visibilitychange", onVis);
       } catch {}
     };
   }, []);
-  return (
-    <div className={`${cls || getThemeClassName("modern-minimal")} ${theme}`}>
-      <App />
-      <Toaster />
-    </div>
-  );
 }
 
-try {
-  const id = `sp-${Date.now()}`;
-  browser.runtime
-    .sendMessage({
-      messageType: MessageType.sidepanelSubscribe,
-      payload: { id },
-    } as any)
-    .catch(() => {});
-  window.addEventListener("beforeunload", () => {
-    browser.runtime
-      .sendMessage({
-        messageType: MessageType.sidepanelUnsubscribe,
-        payload: { id },
-      } as any)
-      .catch(() => {});
-  });
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") {
-      browser.runtime
-        .sendMessage({
-          messageType: MessageType.sidepanelUnsubscribe,
-          payload: { id },
-        } as any)
-        .catch(() => {});
-    } else {
+function useSidepanelPresence(): void {
+  useEffect(() => {
+    const id = `sp-${Date.now()}`;
+    try {
       browser.runtime
         .sendMessage({
           messageType: MessageType.sidepanelSubscribe,
           payload: { id },
         } as any)
         .catch(() => {});
-    }
-  });
-} catch {}
+    } catch {}
+    const onBeforeUnload = () => {
+      try {
+        browser.runtime
+          .sendMessage({
+            messageType: MessageType.sidepanelUnsubscribe,
+            payload: { id },
+          } as any)
+          .catch(() => {});
+      } catch {}
+    };
+    const onVis = () => {
+      try {
+        const messageType =
+          document.visibilityState === "hidden"
+            ? MessageType.sidepanelUnsubscribe
+            : MessageType.sidepanelSubscribe;
+        browser.runtime
+          .sendMessage({ messageType, payload: { id } } as any)
+          .catch(() => {});
+      } catch {}
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      try {
+        window.removeEventListener("beforeunload", onBeforeUnload);
+      } catch {}
+      try {
+        document.removeEventListener("visibilitychange", onVis);
+      } catch {}
+    };
+  }, []);
+}
+
+function SidepanelRoot() {
+  const { theme } = useTheme();
+  const uiThemeClass = useUiThemeClass();
+  useModelAvailabilityReporter();
+  useSidepanelPresence();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+  const containerClass = `${
+    uiThemeClass || getThemeClassName("modern-minimal")
+  } ${theme} transition-[opacity,background-color,color,border-color,text-decoration-color,fill,stroke] duration-300 ease-in-out ${
+    mounted ? "opacity-100" : "opacity-0"
+  }`;
+  return (
+    <div className={containerClass}>
+      <App />
+      <Toaster />
+    </div>
+  );
+}
+
+// Sidepanel presence lifecycle (subscribe/unsubscribe)
+(function initSidepanelPresence() {
+  try {
+    const id = `sp-${Date.now()}`;
+    browser.runtime
+      .sendMessage({
+        messageType: MessageType.sidepanelSubscribe,
+        payload: { id },
+      } as any)
+      .catch(() => {});
+    window.addEventListener("beforeunload", () => {
+      browser.runtime
+        .sendMessage({
+          messageType: MessageType.sidepanelUnsubscribe,
+          payload: { id },
+        } as any)
+        .catch(() => {});
+    });
+    document.addEventListener("visibilitychange", () => {
+      const messageType =
+        document.visibilityState === "hidden"
+          ? MessageType.sidepanelUnsubscribe
+          : MessageType.sidepanelSubscribe;
+      browser.runtime
+        .sendMessage({ messageType, payload: { id } } as any)
+        .catch(() => {});
+    });
+  } catch {}
+})();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ThemeProvider>
-      <UiThemeShell />
+      <SidepanelRoot />
     </ThemeProvider>
   </React.StrictMode>,
 );

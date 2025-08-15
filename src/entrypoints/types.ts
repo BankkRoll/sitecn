@@ -15,13 +15,11 @@ export enum MessageType {
   requestSiteCssStatus = "requestSiteCssStatus", // payload: { domain: string }
   siteCssStatus = "siteCssStatus", // payload: { domain: string, enabled: boolean, hasCss: boolean }
   extractSiteSnapshot = "extractSiteSnapshot", // payload: { domain: string }
-  generateSiteCss = "generateSiteCss", // payload: { domain: string, snapshot?: StyleSnapshot, userText?: string }
-  siteCssGenerated = "siteCssGenerated", // payload: { domain: string, css: string, themeJson?: ThemeJson }
   siteSnapshotExtracted = "siteSnapshotExtracted", // payload: { domain: string, snapshot: StyleSnapshot }
 
-  // Theme analysis (detailed, non-injection)
-  analyzeSiteStyles = "analyzeSiteStyles", // payload: { domain: string, baseThemeName?: string, notes?: string, snapshot?: StyleSnapshot }
-  siteAnalysis = "siteAnalysis", // payload: { domain: string, analysis: string, css: string, themeJson?: ThemeJson }
+  // Unified theme generation (replaces generateSiteCss + analyzeSiteStyles)
+  generateTheme = "generateTheme", // payload: { domain: string, mode: "base" | "preset" | "analyze", baseThemeName?: string, prompt?: string, snapshot?: StyleSnapshot }
+  themeGenerated = "themeGenerated", // payload: { domain: string, css: string, analysis?: string, error?: string, warning?: string }
 
   // Chat and AI model management
   chatPrompt = "chatPrompt", // payload: { sessionId: string, messages: ChatMessage[], domain: string }
@@ -39,6 +37,9 @@ export enum MessageType {
   // Sidepanel management
   sidepanelSubscribe = "sidepanelSubscribe", // payload: { id: string }
   sidepanelUnsubscribe = "sidepanelUnsubscribe", // payload: { id: string }
+
+  // CORS stylesheet fetching
+  fetchCorsStylesheets = "fetchCorsStylesheets", // payload: { urls: string[] }
 }
 
 /**
